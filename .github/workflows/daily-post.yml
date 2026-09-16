@@ -1,0 +1,130 @@
+name: Daily Instagram post
+
+# 12:00 UTC = 07:00 in Panama. Panama does not observe DST, so this one line
+# is correct all year -- no spring/autumn drift to remember.
+on:
+  schedule:
+    - cron: "0 12 * * *"
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "Day to post (YYYY-MM-DD). Blank = today in Panama."
+        required: false
+      dry_run:
+        description: "Build and commit the images, but do not post"
+        type: boolean
+        default: false
+
+concurrency:
+  group: daily-post          # never let two runs race the same day
+  cancel-in-progress: false
+
+permissions:
+  contents: write            # to commit the day's JPEGs for Pages to serve
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Inter is what the cards are designed in. Without it Chromium falls back
+      # to Liberation Sans -- readable, but a different-looking grid, and the
+      # difference only shows up after the post is live.
+      - name: Fonts
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq fonts-inter fonts-liberation fonts-noto-color-emoji
+
+      - name: Playwright Chromium
+        run: |
+          pip install --quiet playwright
+          python -m playwright install --with-deps chromium
+
+      - name: Resolve the date in Panama time
+        id: d
+        run: |
+          D="${{ github.event.inputs.date }}"
+          [ -z "$D" ] && D=$(TZ=America/Panama date +%F)
+          echo "date=$D" >> "$GITHUB_OUTPUT"
+          echo "Building for $D"
+
+      - name: Select today's events
+        id: sel
+        run: |
+          mkdir -p build
+          set +e
+          python3 scripts/select_today.py events.json \
+              --date "${{ steps.d.outputs.date }}" --out build/today.json
+          code=$?
+          set -e
+          # exit 3 is the deliberate "no events today" signal, not a failure.
+          if [ $code -eq 3 ]; then echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          [ $code -eq 0 ] || exit $code
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+
+      - name: Render the carousel
+        if: steps.sel.outputs.skip != 'true'
+        run: |
+          python3 scripts/render_cards.py build/today.json \
+              --out "docs/${{ steps.d.outputs.date }}" --tx tx.json
+          python3 scripts/build_caption.py build/today.json \
+              --out build/caption.txt --tx tx.json
+
+      - name: Verify before anything is published
+        if: steps.sel.outputs.skip != 'true'
+        run: |
+          python3 scripts/verify_post.py "docs/${{ steps.d.outputs.date }}" \
+              --caption build/caption.txt
+
+      - name: Publish the images to GitHub Pages
+        if: steps.sel.outputs.skip != 'true'
+        run: |
+          git config user.name  "panamalive-bot"
+          git config user.email "actions@github.com"
+          git add "docs/${{ steps.d.outputs.date }}"
+          git diff --cached --quiet || \
+            git commit -m "Carousel for ${{ steps.d.outputs.date }}"
+          git push
+
+      - name: Post to Instagram
+        if: steps.sel.outputs.skip != 'true' && github.event.inputs.dry_run != 'true'
+        env:
+          IG_USER_ID:      ${{ secrets.IG_USER_ID }}
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+        run: |
+          python3 scripts/publish_instagram.py "docs/${{ steps.d.outputs.date }}" \
+              --caption build/caption.txt \
+              --base-url "${{ vars.PAGES_BASE_URL }}/${{ steps.d.outputs.date }}" \
+              --state "build/published-${{ steps.d.outputs.date }}.json" \
+              --wait-for-urls 300 \
+              --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Token expiry check
+        if: always()
+        continue-on-error: true
+        env:
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+        run: python3 scripts/refresh_token.py || \
+             echo "::warning::Instagram token check failed - it may have expired. Run refresh_token.py --refresh."
+
+      - name: Nothing on today
+        if: steps.sel.outputs.skip == 'true'
+        run: echo "::notice::No events for ${{ steps.d.outputs.date }} - no post made."
+
+      - name: Keep the carousel images from growing forever
+        if: steps.sel.outputs.skip != 'true'
+        continue-on-error: true
+        run: |
+          # Instagram has long since cached the JPEGs it fetched, so old days
+          # only cost repo size. Keep 60 days of history for spot-checks.
+          cd docs && ls -d 20*-*-* 2>/dev/null | sort | head -n -60 | \
+            xargs -r git rm -rq --
+          cd ..
+          git diff --cached --quiet || {
+            git commit -m "Prune carousels older than 60 days"; git push; }

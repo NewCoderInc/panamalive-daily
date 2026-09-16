@@ -1,0 +1,22 @@
+name: Refresh Instagram token
+
+# A long-lived token lasts 60 days. This runs monthly, well inside that, so the
+# token is never close to expiring. It prints the new token into the run log
+# for you to paste into the secret -- Actions cannot rewrite its own secrets
+# without a PAT, and a PAT that can edit secrets is a bigger risk than a
+# monthly copy-paste.
+on:
+  schedule:
+    - cron: "0 13 1 * *"
+  workflow_dispatch:
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: {python-version: "3.12"}
+      - env:
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+        run: python3 scripts/refresh_token.py --refresh

@@ -1,0 +1,12 @@
+[
+ {"date":"2026-09-09","time":"20:00","title":"Danilo Pérez Trio","venue":"The Club at American Trade Hotel","address":"Plaza Herrera, Casco Viejo","cat":"Live Music","price":"$25","desc":"Weekly jazz residency.","src":"fixture","url":"","beyond":false},
+ {"date":"2026-09-09","time":"21:30","title":"Rumba Salsera con La Disco Virtual","venue":"Eolian Amador","address":"Calzada de Amador","cat":"Live Music","price":"$15 preventa · $20 en puerta","desc":"Salsa night.","src":"fixture","url":"","beyond":false},
+ {"date":"2026-09-09","title":"Expo Cerveza Panamá 2026","venue":"Centro de Convenciones ATLAPA","address":"Vía Israel, San Francisco","cat":"Festivals and Concerts","price":"$18","note":"Hora no publicada","desc":"Craft beer expo.","src":"fixture","url":"","beyond":false},
+ {"date":"2026-09-09","time":"19:00","title":"Tauro FC vs Plaza Amador","venue":"Estadio Rommel Fernández","address":"Vía José Agustín Arango","cat":"Sport","price":"$5","desc":"LPF fixture.","src":"fixture","url":"","beyond":false},
+ {"date":"2026-09-09","time":"20:30","title":"El Regreso al Origen (The Return to the Origin)","venue":"Teatro ABA","address":"Av. Simón Bolívar, Vía Transístmica","cat":"Theatre","price":"$20 · $15 seniors","desc":"Season production.","src":"fixture","url":"","beyond":false},
+ {"date":"2026-09-09","time":"18:00","title":"Taller de serigrafía","venue":"Ciudad de las Artes","address":"Curundú","cat":"Culture","price":"Free","desc":"Screen-printing workshop.","src":"fixture","url":"","beyond":false},
+ {"date":"2026-09-09","time":"17:30","title":"Panamigos Networking Mixer","venue":"CasaCasco Rooftop","address":"Casco Viejo","cat":"Networking","price":"$10","desc":"Monthly mixer.","src":"fixture","url":"","beyond":false},
+ {"date":"2026-09-09","time":"16:00","title":"Feria Artesanal de Portobelo","venue":"Plaza de Portobelo","address":"Portobelo, Colón","cat":"Community","price":"Free","note":"Fuera de la ciudad de Panamá","desc":"Craft fair.","src":"fixture","url":"","beyond":true},
+ {"date":"2026-09-09","time":"22:00","title":"Late Night Music presents Kafu Banton","venue":"The Venue, Soho Mall","address":"Punta Pacífica","cat":"Nightlife","price":"$30","desc":"Reggae night.","src":"fixture","url":"","beyond":false},
+ {"date":"2026-09-09","time":"19:30","title":"Stand Up Comedy Night","venue":"Piano Bar Panama","address":"Casco Viejo","cat":"Comedy","price":"$12","desc":"Open mic.","src":"fixture","url":"","beyond":false}
+]
