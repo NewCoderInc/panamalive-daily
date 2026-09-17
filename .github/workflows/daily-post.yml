@@ -1,10 +1,17 @@
 name: Daily Instagram post
 
-# 12:00 UTC = 07:00 in Panama. Panama does not observe DST, so this one line
-# is correct all year -- no spring/autumn drift to remember.
+# 05:00 UTC = 00:00 in Panama -- the agenda goes out as the day starts.
+# Panama does not observe DST, so this one line is correct all year.
+#
+# Two things follow from posting at midnight rather than in the morning.
+# The date must be resolved in America/Panama, never in the runner's UTC: at
+# 05:00 UTC the runner already calls it tomorrow, and a UTC date here would
+# post the wrong day's agenda every single night. And GitHub's scheduler runs
+# late under load -- usually a few minutes, occasionally longer -- so treat
+# 00:00 as "first thing", not as a guaranteed timestamp.
 on:
   schedule:
-    - cron: "0 12 * * *"
+    - cron: "0 5 * * *"
   workflow_dispatch:
     inputs:
       date:
@@ -59,20 +66,28 @@ jobs:
         run: |
           mkdir -p build
           set +e
+          # Two densities from one day. The poster carries more rows than the
+          # carousel because a reader scans it rather than swiping it.
           python3 scripts/select_today.py events.json \
-              --date "${{ steps.d.outputs.date }}" --out build/today.json
+              --date "${{ steps.d.outputs.date }}" --out build/poster.json --max 12
           code=$?
           set -e
           # exit 3 is the deliberate "no events today" signal, not a failure.
           if [ $code -eq 3 ]; then echo "skip=true" >> "$GITHUB_OUTPUT"; exit 0; fi
           [ $code -eq 0 ] || exit $code
+          python3 scripts/select_today.py events.json \
+              --date "${{ steps.d.outputs.date }}" --out build/today.json --max 8
           echo "skip=false" >> "$GITHUB_OUTPUT"
 
-      - name: Render the carousel
+      - name: Render the agenda poster and the carousel
         if: steps.sel.outputs.skip != 'true'
         run: |
+          # 00_agenda.jpg is the post in agenda format and slide one in
+          # carousel format, so it is always built.
+          python3 scripts/build_brand_poster.py build/poster.json \
+              --out "docs/${{ steps.d.outputs.date }}/00_agenda.jpg"
           python3 scripts/render_cards.py build/today.json \
-              --out "docs/${{ steps.d.outputs.date }}" --tx tx.json
+              --out "docs/${{ steps.d.outputs.date }}" --tx tx.json --no-cover
           python3 scripts/build_caption.py build/today.json \
               --out build/caption.txt --tx tx.json
 
@@ -82,6 +97,7 @@ jobs:
           python3 scripts/build_post_page.py build/today.json \
               --images "docs/${{ steps.d.outputs.date }}" \
               --caption build/caption.txt \
+              --format "${{ vars.POST_FORMAT || 'agenda' }}" \
               --out "docs/${{ steps.d.outputs.date }}/index.html"
           python3 scripts/update_index.py --docs docs
 
@@ -121,10 +137,13 @@ jobs:
           IG_USER_ID:      ${{ secrets.IG_USER_ID }}
           IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
         run: |
+          # POST_FORMAT (repo variable): "agenda" posts the single day-poster,
+          # "carousel" posts the poster plus a slide per event. Default agenda.
           python3 scripts/publish_instagram.py "docs/${{ steps.d.outputs.date }}" \
               --caption build/caption.txt \
               --base-url "${{ vars.PAGES_BASE_URL }}/${{ steps.d.outputs.date }}" \
               --state "build/published-${{ steps.d.outputs.date }}.json" \
+              --format "${{ vars.POST_FORMAT || 'agenda' }}" \
               --wait-for-urls 300 \
               --summary "$GITHUB_STEP_SUMMARY"
 
