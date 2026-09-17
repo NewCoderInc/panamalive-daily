@@ -18,7 +18,14 @@ because a slide that cannot say when is a weaker slide.
 import argparse, datetime as dt, json, pathlib, sys
 from collections import Counter
 
-CAT_PRIORITY = ["Live Music", "Festivals and Concerts", "Sport"]
+# The weekly page orders its tail by category count, which is right when every
+# event is on screen. A carousel has eight slots, so the tail ordering decides
+# what gets CUT, not just what sits lower -- and by count, four midweek club
+# nights outrank a ticketed theatre run and push it off the post entirely.
+# So the daily format ranks categories explicitly: things you buy a ticket for
+# and plan an evening around, before things you wander into.
+CAT_PRIORITY = ["Live Music", "Festivals and Concerts", "Theatre", "Comedy",
+                "Sport", "Culture", "Nightlife", "Community", "Networking"]
 # Cover + events + closing CTA must stay <= 10 (Instagram's carousel ceiling).
 MAX_EVENT_SLIDES = 8
 
@@ -31,15 +38,20 @@ def cat_rank(c):
 
 
 def sort_key(e, counts):
-    """Mirrors the page's own order: the three priority categories, then the
-    rest by how many events that category has today -- the site's
-    "everything else by count" rule. Keeping the two surfaces in the same
-    order is the point; a carousel that ranks the day differently from the
-    page it links to reads as a different editor."""
+    """Rank by CAT_PRIORITY, then by start time within a category.
+
+    Deliberately NOT the website's count-based tail order -- see the note on
+    CAT_PRIORITY. Within a category, earlier events first, and an event with a
+    published time outranks one without, because a slide that cannot say when
+    is a weaker slide."""
     has_time = 0 if (e.get("time") or "").strip() else 1
     beyond = 1 if e.get("beyond") else 0          # in-city first
-    return (beyond, cat_rank(e.get("cat")), -counts.get(e.get("cat"), 0),
-            has_time, e.get("time") or "99:99", (e.get("title") or "").lower())
+    # An editor's pick leads its category even when its time is unpublished --
+    # the pick flag is a judgement already made on the website, and letting a
+    # missing time outrank it buries the one event the editor chose.
+    return (beyond, cat_rank(e.get("cat")), 0 if e.get("pick") else 1,
+            1 if e.get("evergreen") else 0, has_time,
+            e.get("time") or "99:99", (e.get("title") or "").lower())
 
 
 def main():

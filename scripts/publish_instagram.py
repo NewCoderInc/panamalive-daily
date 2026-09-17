@@ -98,11 +98,16 @@ def main():
     ap.add_argument("--wait-for-urls", type=int, default=0, metavar="SECONDS",
                     help="block until every image URL serves 200 before "
                          "publishing (GitHub Pages takes a minute to go live)")
+    ap.add_argument("--format", choices=("agenda", "carousel"), default="agenda",
+                    help="agenda posts the single day-poster (00_*.jpg); "
+                         "carousel posts the poster plus one slide per event")
     ap.add_argument("--summary", default=None,
                     help="append a run summary to this file (GITHUB_STEP_SUMMARY)")
     a = ap.parse_args()
 
     imgs = sorted(pathlib.Path(a.imagedir).glob("*.jpg"))
+    if a.format == "agenda":
+        imgs = [p for p in imgs if p.name.startswith("00_")] or imgs[:1]
     if not imgs:
         sys.exit("no JPEGs in %s" % a.imagedir)
     if len(imgs) > MAX_SLIDES:
@@ -122,7 +127,9 @@ def main():
                   % (prev["published_id"], prev.get("at")))
             return 0
 
-    print("carousel: %d slide(s), %d-char caption" % (len(urls), len(caption)))
+    print("%s: %d image(s), %d-char caption"
+          % ("single image" if len(urls) == 1 else "carousel",
+             len(urls), len(caption)))
     for u in urls:
         print("   %s" % u)
     if a.dry_run:
@@ -163,24 +170,37 @@ def main():
         sys.exit("IG_USER_ID and IG_ACCESS_TOKEN must be set in the environment")
 
     try:
-        print("\n1. item containers")
-        children = []
-        for i, u in enumerate(urls, 1):
+        if len(urls) == 1:
+            # A lone image carries its own caption and needs no carousel
+            # container. Sending is_carousel_item for a single image builds a
+            # container that media_publish then refuses, which is the one way
+            # a single-image post fails that a carousel never does.
+            print("\n1. image container")
             r = _call("POST", "%s/media" % ig_id,
-                      {"image_url": u, "is_carousel_item": "true",
+                      {"image_url": urls[0], "caption": caption,
                        "access_token": token})
-            cid = r["id"]
-            children.append(cid)
-            print("   slide %02d -> %s" % (i, cid))
-            wait_finished(cid, token, "slide %02d" % i)
+            carousel = r["id"]
+            print("   %s" % carousel)
+            wait_finished(carousel, token, "image")
+        else:
+            print("\n1. item containers")
+            children = []
+            for i, u in enumerate(urls, 1):
+                r = _call("POST", "%s/media" % ig_id,
+                          {"image_url": u, "is_carousel_item": "true",
+                           "access_token": token})
+                cid = r["id"]
+                children.append(cid)
+                print("   slide %02d -> %s" % (i, cid))
+                wait_finished(cid, token, "slide %02d" % i)
 
-        print("\n2. carousel container")
-        r = _call("POST", "%s/media" % ig_id,
-                  {"media_type": "CAROUSEL", "children": ",".join(children),
-                   "caption": caption, "access_token": token})
-        carousel = r["id"]
-        print("   %s" % carousel)
-        wait_finished(carousel, token, "carousel")
+            print("\n2. carousel container")
+            r = _call("POST", "%s/media" % ig_id,
+                      {"media_type": "CAROUSEL", "children": ",".join(children),
+                       "caption": caption, "access_token": token})
+            carousel = r["id"]
+            print("   %s" % carousel)
+            wait_finished(carousel, token, "carousel")
 
         print("\n3. publish")
         r = _call("POST", "%s/media_publish" % ig_id,

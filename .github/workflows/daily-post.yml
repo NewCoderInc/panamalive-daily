@@ -76,6 +76,15 @@ jobs:
           python3 scripts/build_caption.py build/today.json \
               --out build/caption.txt --tx tx.json
 
+      - name: Build the phone page for manual posting
+        if: steps.sel.outputs.skip != 'true'
+        run: |
+          python3 scripts/build_post_page.py build/today.json \
+              --images "docs/${{ steps.d.outputs.date }}" \
+              --caption build/caption.txt \
+              --out "docs/${{ steps.d.outputs.date }}/index.html"
+          python3 scripts/update_index.py --docs docs
+
       - name: Verify before anything is published
         if: steps.sel.outputs.skip != 'true'
         run: |
@@ -92,8 +101,22 @@ jobs:
             git commit -m "Carousel for ${{ steps.d.outputs.date }}"
           git push
 
+      - name: Is the Instagram token configured?
+        id: tok
+        if: steps.sel.outputs.skip != 'true'
+        env:
+          IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+        run: |
+          # The whole semi-automatic mode hangs off this one line. With no
+          # token the run stops after building the phone page; add the two
+          # secrets and the publish step below starts firing on its own.
+          if [ -n "$IG_ACCESS_TOKEN" ]; then echo "have=true" >> "$GITHUB_OUTPUT"
+          else echo "have=false" >> "$GITHUB_OUTPUT"
+               echo "::notice::No IG token set - built the page for manual posting instead."
+          fi
+
       - name: Post to Instagram
-        if: steps.sel.outputs.skip != 'true' && github.event.inputs.dry_run != 'true'
+        if: steps.sel.outputs.skip != 'true' && steps.tok.outputs.have == 'true' && github.event.inputs.dry_run != 'true'
         env:
           IG_USER_ID:      ${{ secrets.IG_USER_ID }}
           IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
@@ -105,8 +128,21 @@ jobs:
               --wait-for-urls 300 \
               --summary "$GITHUB_STEP_SUMMARY"
 
+      - name: Where to find today's post
+        if: steps.sel.outputs.skip != 'true' && steps.tok.outputs.have != 'true'
+        run: |
+          {
+            echo "## Ready to post - ${{ steps.d.outputs.date }}"
+            echo
+            echo "Open this on your phone, save the slides in order, copy the caption:"
+            echo
+            echo "**${{ vars.PAGES_BASE_URL }}/${{ steps.d.outputs.date }}/**"
+            echo
+            echo "Or bookmark **${{ vars.PAGES_BASE_URL }}/** - it always opens the newest day."
+          } >> "$GITHUB_STEP_SUMMARY"
+
       - name: Token expiry check
-        if: always()
+        if: steps.tok.outputs.have == 'true' && always()
         continue-on-error: true
         env:
           IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}

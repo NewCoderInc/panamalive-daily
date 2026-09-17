@@ -286,8 +286,8 @@ document.querySelectorAll('[data-fit]').forEach(function(el){
 """
 
 
-def build_page(d):
-    parts = [cover_html(d)]
+def build_page(d, cover=True):
+    parts = [cover_html(d)] if cover else []
     n = len(d["shown"])
     for i, e in enumerate(d["shown"], start=1):
         parts.append(event_html(e, i, n))
@@ -304,6 +304,9 @@ def main():
     ap.add_argument("--keep-html", action="store_true")
     ap.add_argument("--tx", default=None, help="tx.json from the weekly build")
     ap.add_argument("--lang", default="en")
+    ap.add_argument("--no-cover", action="store_true",
+                    help="skip the cover slide, because the agenda poster "
+                         "already leads the carousel")
     a = ap.parse_args()
 
     d = json.loads(pathlib.Path(a.today).read_text(encoding="utf-8"))
@@ -318,13 +321,16 @@ def main():
     outdir = pathlib.Path(a.out)
     outdir.mkdir(parents=True, exist_ok=True)
     page = outdir / "_slides.html"
-    page.write_text(build_page(d), encoding="utf-8")
+    page.write_text(build_page(d, cover=not a.no_cover), encoding="utf-8")
 
     from playwright.sync_api import sync_playwright
 
-    names = (["01_cover"] +
-             ["%02d_event" % (i + 2) for i in range(len(d["shown"]))])
-    names.append("%02d_cta" % (len(d["shown"]) + 2))
+    # Numbering drives the posting order, so it has to stay contiguous whether
+    # or not the cover is there -- the poster occupies 00.
+    first = 1 if a.no_cover else 2
+    names = ([] if a.no_cover else ["01_cover"])
+    names += ["%02d_event" % (i + first) for i in range(len(d["shown"]))]
+    names.append("%02d_cta" % (len(d["shown"]) + first))
 
     written = []
     with sync_playwright() as p:

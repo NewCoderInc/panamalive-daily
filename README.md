@@ -39,6 +39,24 @@ Actions solves three problems at once, free on a public repo:
   public server"*. GitHub Pages serves `docs/` over HTTPS at no cost;
 - **a real scheduler** — one that runs whether or not any machine is awake.
 
+## Two modes, and it switches itself
+
+The workflow checks whether the `IG_ACCESS_TOKEN` secret is set.
+
+**No token — semi-automatic.** Everything runs except the final tap. At 07:00
+the job renders the carousel, writes the caption, verifies both, and publishes
+a phone page to Pages: ten images to long-press and save in order, and the
+caption behind a Copy button. Bookmark the Pages root — it always opens the
+newest day. Posting takes about a minute.
+
+**Token present — fully automatic.** The same run publishes the carousel to
+Instagram and skips the page entirely.
+
+Nothing in the code changes between the two. Add the two secrets and the next
+morning it posts by itself; remove them and it falls back. This exists because
+Meta gates developer registration behind device trust, and a new account can
+be blocked for days — there was no reason to sit idle while that aged out.
+
 ## One-time setup
 
 **1. The Instagram account.** `@thepanamalive.ai` must be a **professional**
