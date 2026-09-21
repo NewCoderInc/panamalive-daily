@@ -66,7 +66,11 @@ def compact(p, limit=22):
     if len(p) <= limit:
         return p
     head = p.split("·")[0].strip().rstrip(",")
-    return head if len(head) <= limit else "from %s" % head.split()[0]
+    if len(head) <= limit:
+        return head
+    first = head.split()[0]
+    # "Free for residents; $3 ..." must not become "from Free".
+    return "Free" if first.lower().strip(",;") in ("free", "gratis") else "from %s" % first
 
 
 def row(e):
@@ -203,12 +207,21 @@ def main():
     ap.add_argument("today")
     ap.add_argument("--out", required=True)
     ap.add_argument("--quality", type=int, default=90)
+    ap.add_argument("--tx", default=None, help="tx.json from the weekly build")
+    ap.add_argument("--lang", default="en")
     a = ap.parse_args()
 
     d = json.loads(pathlib.Path(a.today).read_text(encoding="utf-8"))
     if not d.get("shown"):
         print("nothing to build")
         return 3
+
+    # Same translation pass as the cards and caption, so the poster is not the
+    # one Spanish image in an English post.
+    from tx import Tx
+    tx = Tx(a.tx, a.lang)
+    d["shown"] = [tx.row(e) for e in d["shown"]]
+    print("  translation: %s" % tx.report())
 
     out = pathlib.Path(a.out)
     out.parent.mkdir(parents=True, exist_ok=True)

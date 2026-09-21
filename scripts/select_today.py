@@ -60,6 +60,9 @@ def main():
     ap.add_argument("--date", required=True, help="YYYY-MM-DD, the day to post")
     ap.add_argument("--out", default="today.json")
     ap.add_argument("--max", type=int, default=MAX_EVENT_SLIDES)
+    ap.add_argument("--cap-per-cat", type=int, default=0, metavar="N",
+                    help="at most N rows per category (0 = no cap), so one "
+                         "busy category cannot fill the whole post")
     a = ap.parse_args()
 
     day = dt.date.fromisoformat(a.date)
@@ -77,7 +80,19 @@ def main():
 
     counts = Counter(e.get("cat") for e in todays)
     todays.sort(key=lambda e: sort_key(e, counts))
-    shown, overflow = todays[:a.max], max(0, len(todays) - a.max)
+    if a.cap_per_cat > 0:
+        # Walk the ranked list and skip a row once its category is full. The
+        # skipped rows are not lost -- they count toward the "+N more" line.
+        taken, picked = Counter(), []
+        for e in todays:
+            if len(picked) == a.max:
+                break
+            if taken[e.get("cat")] < a.cap_per_cat:
+                picked.append(e); taken[e.get("cat")] += 1
+        shown = picked
+    else:
+        shown = todays[:a.max]
+    overflow = len(todays) - len(shown)
 
     payload = {
         "date": a.date,
