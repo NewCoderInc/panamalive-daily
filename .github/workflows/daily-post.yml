@@ -55,11 +55,50 @@ jobs:
 
       - name: Resolve the date in Panama time
         id: d
+        env:
+          INPUT_DATE: ${{ github.event.inputs.date }}
         run: |
-          D="${{ github.event.inputs.date }}"
+          # The input arrives via env, never pasted into the script, and must be
+          # a real YYYY-MM-DD date before anything uses it.
+          D="$INPUT_DATE"
           [ -z "$D" ] && D=$(TZ=America/Panama date +%F)
+          if ! [[ "$D" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || ! date -d "$D" >/dev/null 2>&1; then
+            echo "::error::Invalid date '$D' - use YYYY-MM-DD"; exit 1
+          fi
           echo "date=$D" >> "$GITHUB_OUTPUT"
+          # House naming for the deliverable: PTYLIVE_DAY_YEAR. The 00_ prefix
+          # stays because the publisher selects the poster by it and the
+          # carousel takes its order from filename sort -- digits sort before
+          # letters, so a bare PTYLIVE_ name would fall behind 01_event.jpg.
+          echo "poster=00_PTYLIVE_$(date -d "$D" +%d_%Y)" >> "$GITHUB_OUTPUT"
           echo "Building for $D"
+
+      - name: Fetch this week's events from the live site
+        id: fetch
+        run: |
+          # The poster is fed by the same data panamalive.ai shows, read straight
+          # from the page's EVENTS and TX arrays -- so there is no hand-copied
+          # events.json to go stale. A file holding two days is exactly why three
+          # midnight runs in a row found nothing and skipped.
+          #
+          # If the site is unreachable or its template changes, keep going with
+          # the committed events.json rather than losing the day.
+          #
+          # The fetch writes to temp files and only replaces the committed copies
+          # when it fully succeeds, so a half-written file never reaches the build.
+          if python3 scripts/fetch_site_events.py --out events.new.json --tx-out tx.new.json; then
+            mv events.new.json events.json
+            mv tx.new.json tx.json
+          else
+            rm -f events.new.json tx.new.json
+            echo "::warning::Could not read panamalive.ai - falling back to the committed events.json"
+          fi
+          # tx.json only exists if a fetch has ever succeeded or it was committed.
+          # Without it, render without --tx rather than crash.
+          if [ -f tx.json ]; then echo "tx=--tx tx.json" >> "$GITHUB_OUTPUT"
+          else echo "tx=" >> "$GITHUB_OUTPUT"
+               echo "::warning::No tx.json available - rendering without it."
+          fi
 
       - name: Select today's events
         id: sel
@@ -69,7 +108,7 @@ jobs:
           # Two densities from one day. The poster carries more rows than the
           # carousel because a reader scans it rather than swiping it.
           python3 scripts/select_today.py events.json \
-              --date "${{ steps.d.outputs.date }}" --out build/poster.json --max 12
+              --date "${{ steps.d.outputs.date }}" --out build/poster.json --max 14 --cap-per-cat 4
           code=$?
           set -e
           # exit 3 is the deliberate "no events today" signal, not a failure.
@@ -82,14 +121,19 @@ jobs:
       - name: Render the agenda poster and the carousel
         if: steps.sel.outputs.skip != 'true'
         run: |
-          # 00_agenda.jpg is the post in agenda format and slide one in
-          # carousel format, so it is always built.
+          # The 00_PTYLIVE_<day>_<year>.jpg poster is the post in agenda format
+          # and slide one in carousel format, so it is always built.
           python3 scripts/build_brand_poster.py build/poster.json \
-              --out "docs/${{ steps.d.outputs.date }}/00_agenda.jpg"
+              --out "docs/${{ steps.d.outputs.date }}/${{ steps.d.outputs.poster }}.jpg" \
+              ${{ steps.fetch.outputs.tx }}
           python3 scripts/render_cards.py build/today.json \
-              --out "docs/${{ steps.d.outputs.date }}" --tx tx.json --no-cover
-          python3 scripts/build_caption.py build/today.json \
-              --out build/caption.txt --tx tx.json
+              --out "docs/${{ steps.d.outputs.date }}" --no-cover ${{ steps.fetch.outputs.tx }}
+          # The caption lists the same events the reader sees: the poster's rows
+          # in agenda format, the carousel's slides in carousel format.
+          if [ "${{ vars.POST_FORMAT || 'agenda' }}" = "agenda" ]; then CAP_SRC=build/poster.json
+          else CAP_SRC=build/today.json; fi
+          python3 scripts/build_caption.py "$CAP_SRC" \
+              --out build/caption.txt ${{ steps.fetch.outputs.tx }}
 
       - name: Build the phone page for manual posting
         if: steps.sel.outputs.skip != 'true'
@@ -115,40 +159,81 @@ jobs:
           git add "docs/${{ steps.d.outputs.date }}"
           git diff --cached --quiet || \
             git commit -m "Carousel for ${{ steps.d.outputs.date }}"
+          git pull --rebase --autostash --quiet
           git push
 
-      - name: Is the Instagram token configured?
+      - name: Which publisher is configured?
         id: tok
         if: steps.sel.outputs.skip != 'true'
         env:
           IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
+          BUFFER_API_KEY:  ${{ secrets.BUFFER_API_KEY }}
         run: |
-          # The whole semi-automatic mode hangs off this one line. With no
-          # token the run stops after building the phone page; add the two
-          # secrets and the publish step below starts firing on its own.
-          if [ -n "$IG_ACCESS_TOKEN" ]; then echo "have=true" >> "$GITHUB_OUTPUT"
-          else echo "have=false" >> "$GITHUB_OUTPUT"
-               echo "::notice::No IG token set - built the page for manual posting instead."
+          # Publishing mode is chosen by which secret exists -- no code change
+          # to switch. Meta's own API wins if a token is ever obtained; Buffer
+          # is the route while Meta's developer registration stays blocked; with
+          # neither, the run builds the phone page for posting by hand.
+          if   [ -n "$IG_ACCESS_TOKEN" ]; then echo "via=instagram" >> "$GITHUB_OUTPUT"
+          elif [ -n "$BUFFER_API_KEY" ] && [ -f scripts/publish_buffer.py ]; then
+               echo "via=buffer" >> "$GITHUB_OUTPUT"
+          elif [ -n "$BUFFER_API_KEY" ]; then
+               echo "via=none" >> "$GITHUB_OUTPUT"
+               echo "::warning::BUFFER_API_KEY is set but scripts/publish_buffer.py is not in the repo - built the page for manual posting instead."
+          else echo "via=none" >> "$GITHUB_OUTPUT"
+               echo "::notice::No publisher configured - built the page for manual posting instead."
           fi
 
       - name: Post to Instagram
-        if: steps.sel.outputs.skip != 'true' && steps.tok.outputs.have == 'true' && github.event.inputs.dry_run != 'true'
+        if: steps.sel.outputs.skip != 'true' && steps.tok.outputs.via == 'instagram' && github.event.inputs.dry_run != 'true'
         env:
           IG_USER_ID:      ${{ secrets.IG_USER_ID }}
           IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
         run: |
           # POST_FORMAT (repo variable): "agenda" posts the single day-poster,
           # "carousel" posts the poster plus a slide per event. Default agenda.
+          mkdir -p .state
           python3 scripts/publish_instagram.py "docs/${{ steps.d.outputs.date }}" \
               --caption build/caption.txt \
               --base-url "${{ vars.PAGES_BASE_URL }}/${{ steps.d.outputs.date }}" \
-              --state "build/published-${{ steps.d.outputs.date }}.json" \
+              --state ".state/published-${{ steps.d.outputs.date }}.json" \
               --format "${{ vars.POST_FORMAT || 'agenda' }}" \
               --wait-for-urls 300 \
               --summary "$GITHUB_STEP_SUMMARY"
 
+      - name: Post via Buffer
+        if: steps.sel.outputs.skip != 'true' && steps.tok.outputs.via == 'buffer' && github.event.inputs.dry_run != 'true'
+        env:
+          BUFFER_API_KEY:    ${{ secrets.BUFFER_API_KEY }}
+          BUFFER_CHANNEL_ID: ${{ secrets.BUFFER_CHANNEL_ID }}
+        run: |
+          # Buffer runs an approved Meta app, so this needs no Meta developer
+          # account. It fetches the image from Pages, hence the wait; the post is
+          # scheduled two minutes out and Buffer publishes it to Instagram.
+          mkdir -p .state
+          python3 scripts/publish_buffer.py "docs/${{ steps.d.outputs.date }}" \
+              --caption build/caption.txt \
+              --base-url "${{ vars.PAGES_BASE_URL }}/${{ steps.d.outputs.date }}" \
+              --state ".state/published-${{ steps.d.outputs.date }}.json" \
+              --format "${{ vars.POST_FORMAT || 'agenda' }}" \
+              --wait-for-urls 300 \
+              --summary "$GITHUB_STEP_SUMMARY"
+
+      # The publish scripts record what they posted in .state/. Committing that
+      # record means a re-run of the same day sees it and does not post twice.
+      # Runs even if posting failed part-way, so a partial post is remembered.
+      - name: Remember what was posted
+        if: always() && steps.sel.outputs.skip != 'true' && (steps.tok.outputs.via == 'instagram' || steps.tok.outputs.via == 'buffer') && github.event.inputs.dry_run != 'true'
+        run: |
+          f=".state/published-${{ steps.d.outputs.date }}.json"
+          [ -f "$f" ] || { echo "No publish record written."; exit 0; }
+          git add "$f"
+          git diff --cached --quiet || {
+            git commit -m "Publish record for ${{ steps.d.outputs.date }}"
+            git pull --rebase --autostash --quiet
+            git push; }
+
       - name: Where to find today's post
-        if: steps.sel.outputs.skip != 'true' && steps.tok.outputs.have != 'true'
+        if: steps.sel.outputs.skip != 'true' && steps.tok.outputs.via == 'none'
         run: |
           {
             echo "## Ready to post - ${{ steps.d.outputs.date }}"
@@ -161,7 +246,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Token expiry check
-        if: steps.tok.outputs.have == 'true' && always()
+        if: steps.tok.outputs.via == 'instagram' && always()
         continue-on-error: true
         env:
           IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
@@ -170,7 +255,17 @@ jobs:
 
       - name: Nothing on today
         if: steps.sel.outputs.skip == 'true'
-        run: echo "::notice::No events for ${{ steps.d.outputs.date }} - no post made."
+        run: |
+          # Almost always means the site's week has run out: panamalive.ai
+          # covers seven days per build, so the day after the last one finds no
+          # rows. The fix is a fresh pty-week build, not anything in this repo.
+          echo "::warning::No events for ${{ steps.d.outputs.date }} on panamalive.ai - no post made. The site's week has probably ended; run the weekly pty-week build."
+          {
+            echo "## No post for ${{ steps.d.outputs.date }}"
+            echo
+            echo "panamalive.ai has no events for this date. Its weekly build most likely"
+            echo "ended before today - rebuild the week and re-run this workflow."
+          } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Keep the carousel images from growing forever
         if: steps.sel.outputs.skip != 'true'
@@ -181,5 +276,13 @@ jobs:
           cd docs && ls -d 20*-*-* 2>/dev/null | sort | head -n -60 | \
             xargs -r git rm -rq --
           cd ..
+          ls .state/published-*.json 2>/dev/null | sort | head -n -60 | \
+            xargs -r git rm -q --
+          # The index was built before pruning; rebuild it so it never links to
+          # a day that was just removed.
+          python3 scripts/update_index.py --docs docs
+          git add docs
           git diff --cached --quiet || {
-            git commit -m "Prune carousels older than 60 days"; git push; }
+            git commit -m "Prune carousels older than 60 days"
+            git pull --rebase --autostash --quiet
+            git push; }
