@@ -17,7 +17,7 @@ than a full bleed, and the lower half is a solid ground where small type stays
 readable. Everything above the fold is brand; everything below it is
 information.
 """
-import argparse, base64, html, json, pathlib, sys
+import argparse, base64, html, json, pathlib, re, sys
 
 W, H = 1080, 1350
 PINK, GOLD1, GOLD2 = "#ec008c", "#ffe08a", "#f7941e"
@@ -68,9 +68,19 @@ def compact(p, limit=22):
     head = p.split("·")[0].strip().rstrip(",")
     if len(head) <= limit:
         return head
-    first = head.split()[0]
-    # "Free for residents; $3 ..." must not become "from Free".
-    return "Free" if first.lower().strip(",;") in ("free", "gratis") else "from %s" % first
+    words = head.split()
+    first = words[0]
+    if first.lower().strip(",;") in ("free", "gratis"):
+        # "Free for under-18s; $3 ... $17.22" is a range, not a free event:
+        # show it as one, never as a bare FREE badge or "from Free".
+        amounts = [float(x) for x in re.findall(r"\$\s?(\d+(?:\.\d+)?)", p)]
+        if amounts:
+            top = max(amounts)
+            return "Free–$%s" % (("%.2f" % top) if top % 1 else "%d" % top)
+        return "Free"
+    if first.lower() in ("from", "desde") and len(words) > 1:
+        return "from %s" % words[1]          # not "from From"
+    return "from %s" % first
 
 
 def row(e):
