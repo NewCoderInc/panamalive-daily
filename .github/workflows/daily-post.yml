@@ -46,7 +46,12 @@ jobs:
       - name: Fonts
         run: |
           sudo apt-get update -qq
-          sudo apt-get install -y -qq fonts-inter fonts-liberation fonts-noto-color-emoji
+          # DejaVu Sans Condensed Bold is the font build_reel.py paints the CTA
+          # in, and it ships in fonts-dejavu-extra -- not in the -core package
+          # the runner already carries. Without it ffmpeg's drawtext aborts the
+          # whole reel on a missing font file.
+          sudo apt-get install -y -qq fonts-inter fonts-liberation fonts-noto-color-emoji \
+                                      fonts-dejavu-core fonts-dejavu-extra
 
       - name: Playwright Chromium
         run: |
@@ -134,6 +139,22 @@ jobs:
           else CAP_SRC=build/today.json; fi
           python3 scripts/build_caption.py "$CAP_SRC" \
               --out build/caption.txt ${{ steps.fetch.outputs.tx }}
+          # The reel is rendered from poster.json -- more rows than the carousel
+          # carries -- and written into docs/ so Pages serves it, because both
+          # publishers fetch media by public URL rather than uploading bytes.
+          #
+          # Shape is 4:5, chosen for motion rather than compatibility. A full
+          # day's tall render measures ~1950px, so a 1920px 9:16 frame leaves
+          # ~30px of travel: a still image with a soundtrack. Against a 1350px
+          # frame the same render scrolls ~600px. 4:5 sits inside the reel
+          # aspect range and plays full-bleed in the Reels tab. REEL_SHAPE
+          # overrides it, but raise --zoom with 9:16 or it barely moves.
+          python3 scripts/build_reel.py build/poster.json \
+              --out "docs/${{ steps.d.outputs.date }}/reel.mp4" \
+              --audio assets/reel-bed.mp3 \
+              --shape "${{ vars.REEL_SHAPE || 'feed' }}" \
+              --cta "More at PanamaLive.Ai|Follow @thepanamalive.ai" \
+              ${{ steps.fetch.outputs.tx }}
 
       - name: Build the phone page for manual posting
         if: steps.sel.outputs.skip != 'true'
@@ -150,6 +171,16 @@ jobs:
         run: |
           python3 scripts/verify_post.py "docs/${{ steps.d.outputs.date }}" \
               --caption build/caption.txt
+          # verify_post.py gates JPEGs only. A reel that rendered to an empty or
+          # unreadable file would otherwise reach a publish container that fails
+          # minutes later with an error blaming the video, not the render.
+          V="docs/${{ steps.d.outputs.date }}/reel.mp4"
+          [ -s "$V" ] || { echo "::error::$V is missing or empty"; exit 1; }
+          ffprobe -v error -select_streams v:0 -show_entries stream=width,height \
+                  -of csv=p=0 "$V" | grep -qE '^[0-9]+,[0-9]+$' \
+            || { echo "::error::$V is not a readable video"; exit 1; }
+          echo "reel OK: $(ffprobe -v error -select_streams v:0 \
+               -show_entries stream=width,height -of csv=p=0 "$V"), $(du -h "$V" | cut -f1)"
 
       - name: Publish the images to GitHub Pages
         if: steps.sel.outputs.skip != 'true'
@@ -189,16 +220,29 @@ jobs:
           IG_USER_ID:      ${{ secrets.IG_USER_ID }}
           IG_ACCESS_TOKEN: ${{ secrets.IG_ACCESS_TOKEN }}
         run: |
-          # POST_FORMAT (repo variable): "agenda" posts the single day-poster,
-          # "carousel" posts the poster plus a slide per event. Default agenda.
+          # POST_FORMATS (repo variable): space-separated formats, published in
+          # order. The default posts BOTH -- the day-poster as the grid tile and
+          # the reel for reach. "carousel" swaps the poster for a slide per
+          # event. Each format keeps its own state file so the "Remember what
+          # was posted" step can record them independently: a re-run then skips
+          # whatever already published instead of posting it twice.
+          #
+          # A failure in one format must not skip the other, so the loop notes
+          # it and carries on, then exits non-zero at the end.
           mkdir -p .state
-          python3 scripts/publish_instagram.py "docs/${{ steps.d.outputs.date }}" \
-              --caption build/caption.txt \
-              --base-url "${{ vars.PAGES_BASE_URL }}/${{ steps.d.outputs.date }}" \
-              --state ".state/published-${{ steps.d.outputs.date }}.json" \
-              --format "${{ vars.POST_FORMAT || 'agenda' }}" \
-              --wait-for-urls 300 \
-              --summary "$GITHUB_STEP_SUMMARY"
+          rc=0
+          for FMT in ${{ vars.POST_FORMATS || 'agenda reel' }}; do
+            echo "::group::publishing $FMT"
+            python3 scripts/publish_instagram.py "docs/${{ steps.d.outputs.date }}" \
+                --caption build/caption.txt \
+                --base-url "${{ vars.PAGES_BASE_URL }}/${{ steps.d.outputs.date }}" \
+                --state ".state/published-${{ steps.d.outputs.date }}-$FMT.json" \
+                --format "$FMT" \
+                --wait-for-urls 300 \
+                --summary "$GITHUB_STEP_SUMMARY" || rc=1
+            echo "::endgroup::"
+          done
+          exit $rc
 
       - name: Post via Buffer
         if: steps.sel.outputs.skip != 'true' && steps.tok.outputs.via == 'buffer' && github.event.inputs.dry_run != 'true'
@@ -210,13 +254,19 @@ jobs:
           # account. It fetches the image from Pages, hence the wait; the post is
           # scheduled two minutes out and Buffer publishes it to Instagram.
           mkdir -p .state
-          python3 scripts/publish_buffer.py "docs/${{ steps.d.outputs.date }}" \
-              --caption build/caption.txt \
-              --base-url "${{ vars.PAGES_BASE_URL }}/${{ steps.d.outputs.date }}" \
-              --state ".state/published-${{ steps.d.outputs.date }}.json" \
-              --format "${{ vars.POST_FORMAT || 'agenda' }}" \
-              --wait-for-urls 300 \
-              --summary "$GITHUB_STEP_SUMMARY"
+          rc=0
+          for FMT in ${{ vars.POST_FORMATS || 'agenda reel' }}; do
+            echo "::group::publishing $FMT via Buffer"
+            python3 scripts/publish_buffer.py "docs/${{ steps.d.outputs.date }}" \
+                --caption build/caption.txt \
+                --base-url "${{ vars.PAGES_BASE_URL }}/${{ steps.d.outputs.date }}" \
+                --state ".state/published-${{ steps.d.outputs.date }}-$FMT.json" \
+                --format "$FMT" \
+                --wait-for-urls 300 \
+                --summary "$GITHUB_STEP_SUMMARY" || rc=1
+            echo "::endgroup::"
+          done
+          exit $rc
 
       # The publish scripts record what they posted in .state/. Committing that
       # record means a re-run of the same day sees it and does not post twice.
@@ -224,9 +274,9 @@ jobs:
       - name: Remember what was posted
         if: always() && steps.sel.outputs.skip != 'true' && (steps.tok.outputs.via == 'instagram' || steps.tok.outputs.via == 'buffer') && github.event.inputs.dry_run != 'true'
         run: |
-          f=".state/published-${{ steps.d.outputs.date }}.json"
-          [ -f "$f" ] || { echo "No publish record written."; exit 0; }
-          git add "$f"
+          ls .state/published-${{ steps.d.outputs.date }}-*.json >/dev/null 2>&1 || {
+            echo "No publish record written."; exit 0; }
+          git add .state/published-${{ steps.d.outputs.date }}-*.json
           git diff --cached --quiet || {
             git commit -m "Publish record for ${{ steps.d.outputs.date }}"
             git pull --rebase --autostash --quiet
