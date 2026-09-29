@@ -55,7 +55,8 @@ jobs:
 
       - name: Playwright Chromium
         run: |
-          pip install --quiet playwright
+          # Pillow: build_reel.py scales the zoomed render back to 1080 wide.
+          pip install --quiet playwright pillow
           python -m playwright install --with-deps chromium
 
       - name: Resolve the date in Panama time
