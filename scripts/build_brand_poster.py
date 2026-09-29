@@ -28,6 +28,26 @@ CAT_ORDER = ["Live Music", "Festivals and Concerts", "Theatre", "Comedy",
 HERE = pathlib.Path(__file__).resolve().parent.parent
 
 
+# The gold line now carries a date whose length varies by a factor of two
+# ("MAY 3" against "WEDNESDAY SEPTEMBER 30"), so it is sized to the canvas
+# rather than set at a fixed 96px. Same loop build_reel.py runs on the tall
+# render, kept here so the feed poster never ships a headline cut off mid-word.
+HEAD_FIT = """
+(function () {
+  var l2 = document.querySelector('[data-fit-line]');
+  if (!l2) { return 0; }
+  var room = l2.parentElement.clientWidth * 0.94, size = 96;
+  l2.style.fontSize = size + 'px';
+  while (l2.scrollWidth > room && size > 40) { size -= 2; l2.style.fontSize = size + 'px'; }
+  // Keep the white line in proportion to the gold one (the 80/96 of the
+  // brand poster), so a long date shrinks the pair instead of leaving a
+  // headline whose second line is smaller than its first.
+  var l1 = document.querySelector('.l1');
+  if (l1) { l1.style.fontSize = Math.round(size * 80 / 96) + 'px'; }
+  return size;
+})();
+"""
+
 def esc(s):
     return html.escape((s or "").strip())
 
@@ -142,7 +162,7 @@ html,body{background:#000}
 .l1{font-size:80px;color:#fff;
  text-shadow:0 0 2px %(INK)s,3px 3px 0 %(INK)s,-3px 3px 0 %(INK)s,
   3px -3px 0 %(INK)s,-3px -3px 0 %(INK)s,0 9px 22px rgba(0,0,0,.66)}
-.l2{font-size:96px;margin-top:4px;
+.l2{font-size:96px;margin-top:4px;white-space:nowrap;
  background:linear-gradient(180deg,%(G1)s 8%%,%(G2)s 92%%);
  -webkit-background-clip:text;background-clip:text;color:transparent;
  filter:drop-shadow(3px 3px 0 %(INK)s) drop-shadow(-3px -3px 0 %(INK)s)
@@ -194,8 +214,8 @@ html,body{background:#000}
   <div class="lock"><div class="mark">Panamá<b>Live.AI</b></div>
    <div class="sub">LIVE &middot; EXPLORE &middot; EXPERIENCE</div></div>
   <div class="head"><div class="l1">Things to do</div>
-   <div class="l2">Today</div></div>
-  <div class="bandwrap"><div class="band"><span>%(wd)s %(pretty)s &middot; %(n)d events</span></div></div>
+   <div class="l2" data-fit-line>%(wd)s %(pretty)s</div></div>
+  <div class="bandwrap"><div class="band"><span>%(n)d events across Panama City</span></div></div>
   <div class="list">%(body)s</div>
   %(more)s
  </div>
@@ -243,6 +263,7 @@ def main():
         b = p.chromium.launch(args=["--force-color-profile=srgb"])
         pg = b.new_page(viewport={"width": W, "height": H}, device_scale_factor=1)
         pg.goto(tmp.resolve().as_uri()); pg.wait_for_timeout(350)
+        pg.evaluate(HEAD_FIT)
         pg.query_selector(".poster").screenshot(path=str(out), type="jpeg",
                                                 quality=a.quality)
         b.close()
