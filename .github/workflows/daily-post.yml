@@ -50,6 +50,10 @@ jobs:
           # in, and it ships in fonts-dejavu-extra -- not in the -core package
           # the runner already carries. Without it ffmpeg's drawtext aborts the
           # whole reel on a missing font file.
+          # ffmpeg itself is NOT on the ubuntu-latest runner image. Without it
+          # build_reel.py dies on FileNotFoundError and takes the whole night's
+          # post down with it -- the poster never reaches the publish step.
+          sudo apt-get install -y -qq ffmpeg
           sudo apt-get install -y -qq fonts-inter fonts-liberation fonts-noto-color-emoji \
                                       fonts-dejavu-core fonts-dejavu-extra
 
