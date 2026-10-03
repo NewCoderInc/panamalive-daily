@@ -18,17 +18,6 @@ licensed track from its own library over the upload.
 
 --cta paints a call to action over the last seconds, fading in as the footer
 arrives, so the ask lands when the viewer has already read the agenda.
-
-Still mode: when the whole day is only a little taller than the frame (a
-light day -- 9 events overshot a 4:5 frame by 35px), a scroll is a twitch that
-reads as a glitch. Within --still-slack px the reel does not scroll at all: the
-poster is re-rendered to fill the frame exactly, stepping --zoom down only as
-far as needed so every row fits. The CTA and audio are unchanged.
-
-Long titles: the poster clips a title with an ellipsis on one line, which is
-right at 1080px but at --zoom 1.3 (831px layout) cuts real words off. The reel
-render lets titles wrap to a second line instead; the height is measured
-afterwards, so wrapping costs a row's height, never a word.
 """
 import argparse, json, pathlib, subprocess, sys
 
@@ -54,16 +43,10 @@ BASE_PX = 900        # masthead + band + footer + breathing room
 HEAD_FIT = """
 (function () {
   var l2 = document.querySelector('[data-fit-line]');
-  if (!l2) { return 0; }
-  var room = l2.parentElement.clientWidth * 0.94, size = 96;
-  l2.style.fontSize = size + 'px';
-  while (l2.scrollWidth > room && size > 40) { size -= 2; l2.style.fontSize = size + 'px'; }
-  // Keep the white line in proportion to the gold one (the 80/96 of the
-  // brand poster), so a long date shrinks the pair instead of leaving a
-  // headline whose second line is smaller than its first.
-  var l1 = document.querySelector('.l1');
-  if (l1) { l1.style.fontSize = Math.round(size * 80 / 96) + 'px'; }
-  return size;
+  if (l2) {
+    var room = l2.parentElement.clientWidth, size = 96;
+    while (l2.scrollWidth > room && size > 40) { size -= 2; l2.style.fontSize = size + 'px'; }
+  }
 })();
 """
 
@@ -76,67 +59,6 @@ MEASURE = """
   return last ? last.getBoundingClientRect().bottom : 0;
 })();
 """
-
-
-# Injected into every reel render (see "Long titles" above). minmax(0,1fr)
-# stops a long title from pushing the price column off the right edge.
-REEL_CSS = """
-(function () {
-  var st = document.createElement('style');
-  st.textContent = '.r{grid-template-columns:124px minmax(0,1fr) auto}' +
-    '.ti{white-space:normal;overflow:visible;text-overflow:clip;' +
-    'overflow-wrap:anywhere}';
-  document.head.appendChild(st);
-  return 1;
-})();
-"""
-
-
-def _open(b, d, html, height):
-    bp.H = height
-    html.write_text(bp.build(d), encoding="utf-8")
-    pg = b.new_page(viewport={"width": bp.W, "height": height},
-                    device_scale_factor=1)
-    pg.goto(html.resolve().as_uri())
-    pg.wait_for_timeout(350)
-    pg.evaluate(REEL_CSS)
-    pg.evaluate(HEAD_FIT)
-    return pg
-
-
-def render_still(d, out_png, zoom, floor=1.0, step=0.05):
-    """Render the day to fill exactly one FRAME_W x FRAME_H frame, no scroll.
-
-    Tries `zoom` first and steps it down toward `floor` until every row plus
-    the footer fits in the frame. Returns the zoom used, or None if even
-    `floor` does not fit (the caller then falls back to scrolling)."""
-    from playwright.sync_api import sync_playwright
-    html = pathlib.Path(str(out_png) + ".html")
-    used = None
-    with sync_playwright() as p:
-        b = p.chromium.launch(args=["--force-color-profile=srgb"])
-        z = zoom
-        while z >= floor - 1e-9:
-            bp.W = int(round(FRAME_W / z))
-            css_h = int(round(FRAME_H / z))
-            pg = _open(b, d, html, css_h + 2000)     # measure on a tall canvas
-            need = pg.evaluate(MEASURE) + 190
-            pg.close()
-            if need <= css_h:
-                pg = _open(b, d, html, css_h)
-                pg.query_selector(".poster").screenshot(path=str(out_png))
-                pg.close()
-                used = z
-                break
-            z = round(z - step, 3)
-        b.close()
-    html.unlink(missing_ok=True)
-    if used is not None:
-        from PIL import Image
-        im = Image.open(out_png)
-        if im.size != (FRAME_W, FRAME_H):
-            im.resize((FRAME_W, FRAME_H), Image.LANCZOS).save(out_png)
-    return used
 
 
 def render_tall(d, out_png, height, zoom=1.0):
@@ -155,7 +77,13 @@ def render_tall(d, out_png, height, zoom=1.0):
     with sync_playwright() as p:
         b = p.chromium.launch(args=["--force-color-profile=srgb"])
         for attempt in (1, 2):
-            pg = _open(b, d, html, height)
+            bp.H = height
+            html.write_text(bp.build(d), encoding="utf-8")
+            pg = b.new_page(viewport={"width": bp.W, "height": height},
+                            device_scale_factor=1)
+            pg.goto(html.resolve().as_uri())
+            pg.wait_for_timeout(350)
+            pg.evaluate(HEAD_FIT)
             if attempt == 1:
                 bottom = pg.evaluate(MEASURE)
                 pg.close()
@@ -195,10 +123,6 @@ def main():
                     help="call to action painted over the last seconds")
     ap.add_argument("--cta-seconds", type=float, default=3.2,
                     help="how long the call to action is on screen")
-    ap.add_argument("--still-slack", type=int, default=240, metavar="PX",
-                    help="if the tall render overshoots the frame by at most "
-                         "this much (or falls short), don't scroll: fill one "
-                         "still frame instead. 0 = always scroll")
     a = ap.parse_args()
 
     global FRAME_H
@@ -224,22 +148,11 @@ def main():
     tall = render_tall(d, png, tall, a.zoom)
     print("   tall poster: 1080x%d (%d events)" % (tall, len(d["shown"])))
 
-    still = None
-    if a.still_slack > 0 and tall - FRAME_H <= a.still_slack:
-        still = render_still(d, png, a.zoom)
-    if still is not None:
-        print("   still frame: only %+dpx past the frame, no scroll (zoom %.2f)"
-              % (tall - FRAME_H, still))
-        vf = "scale=%d:%d" % (FRAME_W, FRAME_H)
-    else:
-        if tall < FRAME_H:
-            sys.exit("tall render (%dpx) is shorter than the frame and would "
-                     "not fit still either" % tall)
-        travel = a.seconds - 2 * a.hold
-        # smoothstep, so the scroll eases in and out instead of starting at speed
-        p = "clip((t-%.3f)/%.3f,0,1)" % (a.hold, travel)
-        y = "(ih-%d)*(%s*%s*(3-2*%s))" % (FRAME_H, p, p, p)
-        vf = "crop=%d:%d:0:'%s'" % (FRAME_W, FRAME_H, y)
+    travel = a.seconds - 2 * a.hold
+    # smoothstep, so the scroll eases in and out instead of starting at speed
+    p = "clip((t-%.3f)/%.3f,0,1)" % (a.hold, travel)
+    y = "(ih-%d)*(%s*%s*(3-2*%s))" % (FRAME_H, p, p, p)
+    vf = "crop=%d:%d:0:'%s'" % (FRAME_W, FRAME_H, y)
 
     if a.cta:
         t0 = a.seconds - a.cta_seconds

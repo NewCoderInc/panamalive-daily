@@ -19,7 +19,20 @@ information.
 """
 import argparse, base64, html, json, pathlib, re, sys
 
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+from tx import Tx  # noqa: E402
+
+# Instagram feed portrait: 1080x1350 (4:5) is the tallest ratio the feed
+# allows, so the post owns the most screen while someone scrolls. 1080 wide is
+# the sweet spot -- Instagram re-encodes everything, so larger buys nothing.
 W, H = 1080, 1350
+
+# The profile grid previews a post at 3:4, NOT at the 4:5 it was posted in, so
+# a 4:5 image loses (1080 - 1350*0.75) / 2 = 34px off each side in the
+# thumbnail. Side padding must clear that, or right-aligned prices get shaved
+# on the grid while looking perfect in the feed. 64px leaves 30px of margin.
+GRID_CROP = round((W - H * 0.75) / 2)      # 34
+SIDE_PAD = 64
 PINK, GOLD1, GOLD2 = "#ec008c", "#ffe08a", "#f7941e"
 TEAL, INK = "#25d0c0", "#140a1e"
 
@@ -27,26 +40,6 @@ CAT_ORDER = ["Live Music", "Festivals and Concerts", "Theatre", "Comedy",
              "Sport", "Culture", "Nightlife", "Community", "Networking"]
 HERE = pathlib.Path(__file__).resolve().parent.parent
 
-
-# The gold line now carries a date whose length varies by a factor of two
-# ("MAY 3" against "WEDNESDAY SEPTEMBER 30"), so it is sized to the canvas
-# rather than set at a fixed 96px. Same loop build_reel.py runs on the tall
-# render, kept here so the feed poster never ships a headline cut off mid-word.
-HEAD_FIT = """
-(function () {
-  var l2 = document.querySelector('[data-fit-line]');
-  if (!l2) { return 0; }
-  var room = l2.parentElement.clientWidth * 0.94, size = 96;
-  l2.style.fontSize = size + 'px';
-  while (l2.scrollWidth > room && size > 40) { size -= 2; l2.style.fontSize = size + 'px'; }
-  // Keep the white line in proportion to the gold one (the 80/96 of the
-  // brand poster), so a long date shrinks the pair instead of leaving a
-  // headline whose second line is smaller than its first.
-  var l1 = document.querySelector('.l1');
-  if (l1) { l1.style.fontSize = Math.round(size * 80 / 96) + 'px'; }
-  return size;
-})();
-"""
 
 def esc(s):
     return html.escape((s or "").strip())
@@ -81,26 +74,44 @@ def is_free(p):
                                          "entrada gratis")
 
 
+AMOUNT_RE = re.compile(r"(US\$|B/\.|\$)\s?(\d+(?:[.,]\d{1,2})?)")
+
+
 def compact(p, limit=22):
+    """A long ladder becomes its entry point -- the lowest real amount.
+
+    Taking the first word instead produced "from Free" for the Miraflores
+    visitor centre, which is free only for under-18 nationals; every adult
+    pays $3.00. By the house rule that is a paid event, and a poster that
+    calls it free sends a family to the gate with the wrong expectation."""
     p = (p or "").strip()
     if len(p) <= limit:
         return p
-    head = p.split("·")[0].strip().rstrip(",")
-    if len(head) <= limit:
-        return head
-    words = head.split()
-    first = words[0]
-    if first.lower().strip(",;") in ("free", "gratis"):
-        # "Free for under-18s; $3 ... $17.22" is a range, not a free event:
-        # show it as one, never as a bare FREE badge or "from Free".
-        amounts = [float(x) for x in re.findall(r"\$\s?(\d+(?:\.\d+)?)", p)]
-        if amounts:
-            top = max(amounts)
-            return "Free–$%s" % (("%.2f" % top) if top % 1 else "%d" % top)
-        return "Free"
-    if first.lower() in ("from", "desde") and len(words) > 1:
-        return "from %s" % words[1]          # not "from From"
-    return "from %s" % first
+    # Amounts in parentheses are qualifiers -- an early-bird rate, a fee note --
+    # not the price. "US$150 (US$130 early payment until 11 September)" is a
+    # US$150 ticket; reading the bracket gave "from US$130" ten days after that
+    # rate expired. Only fall back to bracketed amounts if nothing else exists.
+    headline = re.sub(r"\([^)]*\)", " ", p)
+    found = AMOUNT_RE.findall(headline) or AMOUNT_RE.findall(p)
+    amounts = [(float(n.replace(",", ".")), cur, n) for cur, n in found]
+    if amounts:
+        _, cur, n = min(amounts)
+        return "from %s%s" % (cur, n)
+    head = re.split(r"\s*[·;]\s*", p)[0].strip()
+    return head if len(head) <= limit else head[:limit - 1].rstrip() + "…"
+
+
+def short_title(t, limit=44):
+    """Cut a long title at its dash: "Course: Cities Between Grey and Green —
+    Redesigning the relationship..." keeps the part a reader recognises."""
+    t = (t or "").strip()
+    # "— visit" is the site's marker for standing opening hours. It is useful
+    # data (it is how evergreen rows are detected) but noise on the poster,
+    # and in a caption it produces "Miraflores — visit — 8:00 AM".
+    t = re.sub(r"\s*[—-]\s*(visita|visit)\s*$", "", t, flags=re.I)
+    if len(t) > limit and " — " in t:
+        return t.split(" — ")[0].strip()
+    return t
 
 
 def row(e):
@@ -116,15 +127,21 @@ def row(e):
             '<div class="md"><div class="ti">%s</div>'
             '<div class="vn">%s</div></div><div class="pc">%s</div></div>'
             ) % (esc(t) if t else '<span class="tba">TBA</span>',
-                 esc(e.get("title")), esc(e.get("venue")), tag)
+                 esc(short_title(e.get("title"))), esc(e.get("venue")), tag)
 
 
 def build(d):
+    # A festival four hours away does not belong second on a Panama City
+    # agenda. The site keeps these on their own Beyond Panama City panel; the
+    # poster does the same, and puts that section last.
+    BEYOND = "Beyond Panama City"
     buckets = {}
     for e in d["shown"]:
-        buckets.setdefault(e.get("cat") or "Other", []).append(e)
+        key = BEYOND if e.get("beyond") else (e.get("cat") or "Other")
+        buckets.setdefault(key, []).append(e)
     order = [c for c in CAT_ORDER if c in buckets] + \
-            sorted(c for c in buckets if c not in CAT_ORDER)
+            sorted(c for c in buckets if c not in CAT_ORDER and c != BEYOND) + \
+            ([BEYOND] if BEYOND in buckets else [])
 
     body = ""
     for cat in order:
@@ -132,8 +149,12 @@ def build(d):
                 % esc(cat.upper())
         body += "".join(row(e) for e in buckets[cat])
 
-    more = ('<div class="more">+%d more today at PanamaLive.Ai</div>'
-            % d["overflow"]) if d.get("overflow") else ""
+    # Always emit the line, hidden when empty: the fit step may trim rows even
+    # on a day that started with no overflow, and a trimmed event must still be
+    # counted rather than silently disappear.
+    n = d.get("overflow") or 0
+    more = ('<div class="more" data-n="%d"%s>+%d more today at PanamaLive.Ai</div>'
+            % (n, "" if n else ' style="display:none"', n))
 
     return """<!doctype html><meta charset="utf-8"><style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -147,7 +168,7 @@ html,body{background:#000}
  background:linear-gradient(180deg,rgba(20,10,30,.74) 0%%,rgba(20,10,30,.30) 30%%,
   rgba(20,10,30,.62) 66%%,%(INK)s 100%%)}
 .body{position:absolute;inset:0;display:flex;flex-direction:column;
- padding:26px 44px 140px}   /* 126px footer + breathing room */
+ padding:26px %(pad)dpx 140px}   /* 126px footer + breathing room */
 /* ---- lockup ---- */
 .lock{position:relative;z-index:3;text-align:center}
 .mark{font-size:52px;font-weight:700;letter-spacing:-.022em;line-height:1;
@@ -162,7 +183,7 @@ html,body{background:#000}
 .l1{font-size:80px;color:#fff;
  text-shadow:0 0 2px %(INK)s,3px 3px 0 %(INK)s,-3px 3px 0 %(INK)s,
   3px -3px 0 %(INK)s,-3px -3px 0 %(INK)s,0 9px 22px rgba(0,0,0,.66)}
-.l2{font-size:96px;margin-top:4px;white-space:nowrap;
+.l2{font-size:96px;margin-top:4px;white-space:nowrap;display:inline-block;
  background:linear-gradient(180deg,%(G1)s 8%%,%(G2)s 92%%);
  -webkit-background-clip:text;background-clip:text;color:transparent;
  filter:drop-shadow(3px 3px 0 %(INK)s) drop-shadow(-3px -3px 0 %(INK)s)
@@ -190,6 +211,7 @@ html,body{background:#000}
  white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .vn{font-size:14px;color:rgba(255,255,255,.62);white-space:nowrap;
  overflow:hidden;text-overflow:ellipsis;margin-top:1px}
+.md{min-width:0}
 .pc{text-align:right}
 .pr{font-size:15.5px;font-weight:700;white-space:nowrap}
 .free{font-size:12.5px;font-weight:700;letter-spacing:.09em;color:%(INK)s;
@@ -200,7 +222,7 @@ html,body{background:#000}
 /* ---- footer ---- */
 .foot{position:absolute;left:0;right:0;bottom:0;height:126px;background:%(PINK)s;
  display:flex;align-items:center;justify-content:space-between;
- padding:0 40px;z-index:4}
+ padding:0 %(pad)dpx;z-index:4}
 .fl .url{font-size:41px;font-weight:700;letter-spacing:-.012em;line-height:1}
 .fl .tag{font-size:14.5px;font-weight:700;letter-spacing:.3em;margin-top:6px}
 .fr{display:flex;flex-direction:column;align-items:flex-end;gap:5px}
@@ -225,11 +247,51 @@ html,body{background:#000}
   <div class="fr"><div class="handle">@thepanamalive.ai</div>
    <div class="scan">DAILY &middot; 7 DAYS A WEEK</div></div>
  </div>
-</div>""" % {"W": W, "H": H, "INK": INK, "PINK": PINK, "G1": GOLD1,
+</div>""" % {"W": W, "H": H, "pad": SIDE_PAD,
+              "INK": INK, "PINK": PINK, "G1": GOLD1,
               "G2": GOLD2, "TEAL": TEAL, "sky": b64("assets/skyline.jpg"),
               "body": body, "more": more,
               "wd": esc(d["weekday"].upper()), "pretty": esc(d["pretty"].upper()),
               "n": d["total"]}
+
+
+FIT_JS = """
+(function () {
+  var l2 = document.querySelector('[data-fit-line]');
+  if (l2) {
+    var room = l2.parentElement.clientWidth, size = 96;
+    while (l2.scrollWidth > room && size > 64) { size -= 2; l2.style.fontSize = size + 'px'; }
+  }
+})();
+(function () {
+  var list = document.querySelector('.list'), more = document.querySelector('.more');
+  var dropped = 0, guard = 0;
+  while (list.scrollHeight > list.clientHeight && list.lastElementChild && guard++ < 60) {
+    var el = list.lastElementChild;
+    if (el.classList.contains('r')) dropped++;
+    list.removeChild(el);
+  }
+  // A category heading with no rows under it is worse than no heading.
+  while (list.lastElementChild && list.lastElementChild.classList.contains('hd')) {
+    list.removeChild(list.lastElementChild);
+  }
+  if (dropped && more) {
+    var total = parseInt(more.getAttribute('data-n') || '0', 10) + dropped;
+    more.textContent = '+' + total + ' more today at PanamaLive.Ai';
+    more.style.display = '';
+    // showing the line costs height; re-trim if it pushed the list over
+    var g2 = 0;
+    while (list.scrollHeight > list.clientHeight && list.lastElementChild && g2++ < 20) {
+      var el2 = list.lastElementChild;
+      if (el2.classList.contains('r')) { total++; }
+      list.removeChild(el2);
+      more.textContent = '+' + total + ' more today at PanamaLive.Ai';
+    }
+    while (list.lastElementChild && list.lastElementChild.classList.contains('hd')) list.removeChild(list.lastElementChild);
+  }
+  window.__dropped = dropped;
+})();
+"""
 
 
 def main():
@@ -237,7 +299,8 @@ def main():
     ap.add_argument("today")
     ap.add_argument("--out", required=True)
     ap.add_argument("--quality", type=int, default=90)
-    ap.add_argument("--tx", default=None, help="tx.json from the weekly build")
+    ap.add_argument("--tx", default=None,
+                    help="tx.json -- the site's own TX map; the poster is English")
     ap.add_argument("--lang", default="en")
     a = ap.parse_args()
 
@@ -245,13 +308,12 @@ def main():
     if not d.get("shown"):
         print("nothing to build")
         return 3
-
-    # Same translation pass as the cards and caption, so the poster is not the
-    # one Spanish image in an English post.
-    from tx import Tx
+    # The site stores events in the language they were published in and keeps
+    # English in TX. Without this the poster prints "Música latina en vivo en
+    # The Wine Bar" on an English account -- correct data, wrong language.
     tx = Tx(a.tx, a.lang)
     d["shown"] = [tx.row(e) for e in d["shown"]]
-    print("  translation: %s" % tx.report())
+    print("   translation: %s" % tx.report())
 
     out = pathlib.Path(a.out)
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -263,7 +325,9 @@ def main():
         b = p.chromium.launch(args=["--force-color-profile=srgb"])
         pg = b.new_page(viewport={"width": W, "height": H}, device_scale_factor=1)
         pg.goto(tmp.resolve().as_uri()); pg.wait_for_timeout(350)
-        pg.evaluate(HEAD_FIT)
+        dropped = pg.evaluate(FIT_JS + "; window.__dropped")
+        if dropped:
+            print("   trimmed %d row(s) to fit; '+N more' adjusted" % dropped)
         pg.query_selector(".poster").screenshot(path=str(out), type="jpeg",
                                                 quality=a.quality)
         b.close()

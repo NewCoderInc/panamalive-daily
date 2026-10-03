@@ -96,10 +96,12 @@ def main():
     if not imgs:
         sys.exit("no images in %s" % a.images)
 
+    one = len(imgs) == 1
     slides = "".join(
-        '<div class="slide"><div class="n">SLIDE %02d OF %02d</div>'
-        '<img src="%s" alt="Slide %d"></div>'
-        % (i, len(imgs), html.escape(p.name), i)
+        '<div class="slide">%s<img src="%s" alt="%s"></div>'
+        % ("" if one else '<div class="n">SLIDE %02d OF %02d</div>' % (i, len(imgs)),
+           html.escape(p.name),
+           "Today's agenda" if one else "Slide %d" % i)
         for i, p in enumerate(imgs, 1))
 
     n = d["total"]
@@ -111,15 +113,18 @@ def main():
         '<div class="wrap"><header>'
         '<div class="wm">PTY <em>LIVE</em></div>'
         '<h1>%(weekday)s, %(pretty)s</h1>'
-        '<div class="sub">%(n)d event%(s)s &middot; %(k)d slides ready</div>'
+        '<div class="sub">%(n)d event%(s)s &middot; %(kw)s</div>'
         '</header>'
         '<div class="how"><b>To post:</b>'
-        '<ol><li>Long-press each image below and save it &mdash; <b>in order</b>,'
-        ' top to bottom.</li>'
+        '<ol><li>%(save)s</li>'
         '<li>Tap <b>Copy caption</b> at the bottom.</li>'
-        '<li>In Instagram, new post &rarr; select all %(k)d &rarr; check the order'
-        ' &rarr; paste the caption.</li></ol></div>'
-        '<h2>The slides</h2>%(slides)s'
+        '<li>In Instagram, new post &rarr; %(pick)s.</li>'
+        '<li><b>Tap the crop icon</b> (the two outward arrows, bottom-left of the '
+        'preview) so it shows the full <b>4:5</b> poster. Instagram crops to a '
+        'square by default, which cuts off the headline and the pink footer.</li>'
+        '<li>Paste the caption and share.</li>'
+        '</ol></div>'
+        '<h2>%(heading)s</h2>%(slides)s'
         '<h2>The caption</h2>'
         '<div class="cap"><pre id="captext">%(cap)s</pre>'
         '<button id="copy">Copy caption</button></div>'
@@ -129,7 +134,16 @@ def main():
         '</div><script>%(js)s</script></body></html>'
     ) % {"css": CSS, "js": JS, "slides": slides, "cap": html.escape(cap),
          "weekday": html.escape(d["weekday"]), "pretty": html.escape(d["pretty"]),
-         "n": n, "s": "" if n == 1 else "s", "k": len(imgs)}
+         "n": n, "s": "" if n == 1 else "s", "k": len(imgs),
+         "kw": ("1 image ready" if len(imgs) == 1
+                else "%d slides ready" % len(imgs)),
+         "save": ("Long-press the image below and save it."
+                  if len(imgs) == 1 else
+                  "Long-press each image below and save it &mdash; "
+                  "<b>in order</b>, top to bottom."),
+         "heading": "The post" if len(imgs) == 1 else "The slides",
+         "pick": ("choose it" if len(imgs) == 1
+                  else "select all %d &rarr; check the order" % len(imgs))}
 
     out = pathlib.Path(a.out)
     out.parent.mkdir(parents=True, exist_ok=True)

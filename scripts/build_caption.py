@@ -16,8 +16,16 @@ import argparse, json, pathlib, sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from tx import Tx  # noqa: E402
+# One source of truth for how a price and a title are shortened, shared
+# with the poster -- otherwise the caption quoted an early-bird rate that
+# had expired ten days earlier while the poster, correctly, did not.
+from build_brand_poster import compact, short_title  # noqa: E402
 
 MAX_CHARS, MAX_TAGS = 2200, 30
+# Instagram allows 30 hashtags on a feed post but only 5 on a REEL, and Buffer
+# refuses to queue a reel that breaks it -- found the hard way on the first
+# reel we published. --max-tags trims the list for the reel caption.
+REEL_TAGS = 5
 
 # Only the house emoji keep-list. One of each per line, same rule as the site.
 CAT_EMOJI = {
@@ -57,48 +65,46 @@ def fmt_time(t):
 
 
 def line_for(e):
-    bits = [e.get("venue") or ""]
+    title = short_title(e.get("title"))
+    venue = (e.get("venue") or "").strip()
+    # "Biomuseo — visit — Biomuseo" says the same thing twice.
+    bits = [] if venue and venue.lower() in title.lower() else [venue]
     t = fmt_time(e.get("time"))
     if t:
         bits.append(t)
-    price = (e.get("price") or "").strip()
+    price = compact(e.get("price"), limit=34)
     if price:
         bits.append(price)
     tail = " · ".join(b for b in bits if b)
     em = CAT_EMOJI.get(e.get("cat") or "", "📅")
     flag = " (outside Panama City)" if e.get("beyond") else ""
-    return "%s %s — %s%s" % (em, (e.get("title") or "").strip(), tail, flag)
+    return "%s %s%s%s" % (em, title, (" — " + tail) if tail else "", flag)
 
 
-def build(d, handle_week="PanamaLive.Ai"):
+def build(d, handle_week="PanamaLive.Ai", promo="", max_tags=MAX_TAGS):
+    """Caption = the headline, an optional promo block, then the hashtags.
+
+    Everything factual -- the event list, the times, the prices -- is on the
+    poster, and the account's editorial line is that the caption must not
+    repeat it. The sourcing note and the "full week" line came out for the
+    same reason. The space between the headline and the tags is reserved for
+    marketing copy, which --promo drops in unchanged."""
     head = "WHAT'S ON IN PANAMA CITY — %s, %s" % (d["weekday"], d["pretty"])
-    lines = [line_for(e) for e in d["shown"]]
 
-    tail = []
-    if d.get("overflow"):
-        tail.append("+ %d more on today's agenda." % d["overflow"])
-    tail.append("Every time and price checked against a primary source.")
-    tail.append("Full week → %s" % handle_week)
-
+    # Tags still follow what is actually on today, so reach matches the day.
     tags = list(BASE_TAGS)
     for e in d["shown"]:
         for t in CAT_TAGS.get(e.get("cat") or "", []):
             if t not in tags:
                 tags.append(t)
-    tags = tags[:MAX_TAGS]
+    tags = tags[:max_tags]
 
-    def assemble(ls):
-        return "\n\n".join([head, "\n".join(ls), "\n".join(tail),
-                            " ".join(tags)])
-
-    cap = assemble(lines)
-    # Drop from the bottom of the listing until it fits -- never mid-sentence,
-    # and never from the tags, which are the part that earns reach.
-    while len(cap) > MAX_CHARS and len(lines) > 1:
-        lines.pop()
-        d["overflow"] = d.get("overflow", 0) + 1
-        tail[0] = "+ %d more on today's agenda." % d["overflow"]
-        cap = assemble(lines)
+    parts = [head] + ([promo.strip()] if promo.strip() else []) + [" ".join(tags)]
+    cap = "\n\n".join(parts)
+    if len(cap) > MAX_CHARS:            # only reachable via a long promo, so
+        over = len(cap) - MAX_CHARS     # trim the promo, never the tags
+        raise SystemExit("caption is %d chars -- shorten the promo text by %d"
+                         % (len(cap), over))
     return cap
 
 
@@ -109,6 +115,12 @@ def main():
     ap.add_argument("--site", default="PanamaLive.Ai")
     ap.add_argument("--tx", default=None)
     ap.add_argument("--lang", default="en")
+    ap.add_argument("--max-tags", type=int, default=MAX_TAGS,
+                    help="cap the hashtag block; use %d for a reel caption, "
+                         "which Instagram limits to that many" % REEL_TAGS)
+    ap.add_argument("--promo", default=None, metavar="FILE",
+                    help="marketing copy to place between the headline and "
+                         "the hashtags (a text file; blank = no promo block)")
     a = ap.parse_args()
 
     d = json.loads(pathlib.Path(a.today).read_text(encoding="utf-8"))
@@ -120,7 +132,16 @@ def main():
     d["shown"] = [tx.row(e) for e in d["shown"]]
     print("  translation: %s" % tx.report())
 
-    cap = build(d, a.site)
+    promo = ""
+    if a.promo:
+        pf = pathlib.Path(a.promo)
+        # A missing promo file must not lose the day's post; the caption is
+        # valid without it.
+        if pf.exists():
+            promo = pf.read_text(encoding="utf-8")
+        else:
+            print("  no promo file at %s -- caption built without one" % pf)
+    cap = build(d, a.site, promo, min(a.max_tags, MAX_TAGS))
     pathlib.Path(a.out).write_text(cap, encoding="utf-8")
     ntags = sum(1 for w in cap.split() if w.startswith("#"))
     print("wrote %s  (%d chars / %d max, %d hashtags / %d max)"

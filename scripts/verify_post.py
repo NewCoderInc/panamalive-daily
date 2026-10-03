@@ -13,6 +13,9 @@ Mirrors the weekly build's verify.js: do not publish on a FAIL.
 import argparse, pathlib, struct, sys
 
 MAXW, MINW = 1440, 320
+# What Instagram actually wants for a feed portrait post. Anything else still
+# publishes, but gets re-cropped or re-encoded, so flag it.
+IG_PORTRAIT = (1080, 1350)
 AR_MIN, AR_MAX = 0.80, 1.91          # Instagram's accepted aspect range
 MAX_BYTES = 8 * 1024 * 1024
 MAX_SLIDES = 10
@@ -84,6 +87,15 @@ def main():
         if not (AR_MIN - 1e-9 <= ar <= AR_MAX):
             fails.append("%s aspect ratio %.3f is outside %.2f-%.2f"
                          % (p.name, ar, AR_MIN, AR_MAX))
+
+    # The house rule: everything is built at Instagram feed-portrait size.
+    # A size that merely passes the API limits is not good enough -- it means
+    # Instagram re-crops the post, and the difference only shows up live.
+    off = [s for s in sizes if s != IG_PORTRAIT]
+    if off:
+        fails.append("not Instagram feed-portrait size: %s (expected %dx%d)"
+                     % (", ".join("%dx%d" % s for s in sorted(off)),
+                        IG_PORTRAIT[0], IG_PORTRAIT[1]))
 
     # The one that silently ruins a carousel: Instagram crops every slide to
     # the first slide's ratio, so mixed sizes means cropped content.

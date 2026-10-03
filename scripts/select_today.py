@@ -61,8 +61,9 @@ def main():
     ap.add_argument("--out", default="today.json")
     ap.add_argument("--max", type=int, default=MAX_EVENT_SLIDES)
     ap.add_argument("--cap-per-cat", type=int, default=0, metavar="N",
-                    help="at most N rows per category (0 = no cap), so one "
-                         "busy category cannot fill the whole post")
+                    help="at most N events from any one category, so a day "
+                         "with eight live-music listings still shows the "
+                         "theatre, the football and the museums (0 = no cap)")
     a = ap.parse_args()
 
     day = dt.date.fromisoformat(a.date)
@@ -80,19 +81,21 @@ def main():
 
     counts = Counter(e.get("cat") for e in todays)
     todays.sort(key=lambda e: sort_key(e, counts))
-    if a.cap_per_cat > 0:
-        # Walk the ranked list and skip a row once its category is full. The
-        # skipped rows are not lost -- they count toward the "+N more" line.
-        taken, picked = Counter(), []
+
+    if a.cap_per_cat:
+        # Without this, one busy category swallows the poster: eight live-music
+        # rows on a Friday pushed the football match and every museum off. The
+        # cap is applied AFTER sorting, so each category still contributes its
+        # own best entries -- the editor's pick first, then earliest.
+        seen, capped, spill = {}, [], []
         for e in todays:
-            if len(picked) == a.max:
-                break
-            if taken[e.get("cat")] < a.cap_per_cat:
-                picked.append(e); taken[e.get("cat")] += 1
-        shown = picked
-    else:
-        shown = todays[:a.max]
-    overflow = len(todays) - len(shown)
+            c = e.get("cat") or "?"
+            seen[c] = seen.get(c, 0) + 1
+            (capped if seen[c] <= a.cap_per_cat else spill).append(e)
+        # If the cap leaves slots unfilled, give them back in original order.
+        todays = capped + spill
+
+    shown, overflow = todays[:a.max], max(0, len(todays) - a.max)
 
     payload = {
         "date": a.date,

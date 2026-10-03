@@ -36,10 +36,6 @@ API = "https://graph.instagram.com"
 VERSION = "v23.0"
 MAX_SLIDES = 10
 POLL_TIMEOUT, POLL_EVERY = 180, 5
-# Instagram transcodes a video after fetching it, so a reel container sits in
-# IN_PROGRESS for minutes where an image fetch takes seconds. Applying the
-# image budget to video fails posts that were going to succeed.
-VIDEO_POLL_TIMEOUT = 900
 
 
 class IGError(RuntimeError):
@@ -69,10 +65,10 @@ def _call(method, path, params, timeout=60):
         raise IGError("%s %s -> network: %s" % (method, path, e.reason))
 
 
-def wait_finished(container_id, token, label, timeout=POLL_TIMEOUT):
+def wait_finished(container_id, token, label):
     """Poll a container to FINISHED. IN_PROGRESS means Instagram is still
     fetching the image; EXPIRED means we waited too long to publish it."""
-    deadline = time.time() + timeout
+    deadline = time.time() + POLL_TIMEOUT
     last = None
     while time.time() < deadline:
         r = _call("GET", container_id,
@@ -87,7 +83,7 @@ def wait_finished(container_id, token, label, timeout=POLL_TIMEOUT):
             raise IGError("%s ended as %s -- %s"
                           % (label, code, r.get("status", "no detail")))
         time.sleep(POLL_EVERY)
-    raise IGError("%s still %s after %ds" % (label, last, timeout))
+    raise IGError("%s still %s after %ds" % (label, last, POLL_TIMEOUT))
 
 
 def main():
@@ -102,29 +98,20 @@ def main():
     ap.add_argument("--wait-for-urls", type=int, default=0, metavar="SECONDS",
                     help="block until every image URL serves 200 before "
                          "publishing (GitHub Pages takes a minute to go live)")
-    ap.add_argument("--format", choices=("agenda", "carousel", "reel"), default="agenda",
+    ap.add_argument("--format", choices=("agenda", "carousel"), default="agenda",
                     help="agenda posts the single day-poster (00_*.jpg); "
                          "carousel posts the poster plus one slide per event")
     ap.add_argument("--summary", default=None,
                     help="append a run summary to this file (GITHUB_STEP_SUMMARY)")
     a = ap.parse_args()
 
-    if a.format == "reel":
-        # One MP4 per day. Sorted rather than taking whatever the filesystem
-        # hands back first, so a directory holding two resolves the same way
-        # on every run.
-        vids = sorted(pathlib.Path(a.imagedir).glob("*.mp4"))
-        if not vids:
-            sys.exit("no MP4 in %s -- did build_reel.py run?" % a.imagedir)
-        imgs = vids[:1]
-    else:
-        imgs = sorted(pathlib.Path(a.imagedir).glob("*.jpg"))
-        if a.format == "agenda":
-            imgs = [p for p in imgs if p.name.startswith("00_")] or imgs[:1]
-        if not imgs:
-            sys.exit("no JPEGs in %s" % a.imagedir)
-        if len(imgs) > MAX_SLIDES:
-            sys.exit("%d slides -- Instagram allows %d" % (len(imgs), MAX_SLIDES))
+    imgs = sorted(pathlib.Path(a.imagedir).glob("*.jpg"))
+    if a.format == "agenda":
+        imgs = [p for p in imgs if p.name.startswith("00_")] or imgs[:1]
+    if not imgs:
+        sys.exit("no JPEGs in %s" % a.imagedir)
+    if len(imgs) > MAX_SLIDES:
+        sys.exit("%d slides -- Instagram allows %d" % (len(imgs), MAX_SLIDES))
     caption = pathlib.Path(a.caption).read_text(encoding="utf-8")
     if len(caption) > 2200:
         sys.exit("caption is %d chars, the limit is 2200" % len(caption))
@@ -179,22 +166,22 @@ def main():
 
     ig_id = os.environ.get("IG_USER_ID", "").strip()
     token = os.environ.get("IG_ACCESS_TOKEN", "").strip()
-    if not ig_id or not token:
-        sys.exit("IG_USER_ID and IG_ACCESS_TOKEN must be set in the environment")
+    if not token:
+        sys.exit("IG_ACCESS_TOKEN must be set in the environment")
+    if not ig_id:
+        # The token already names the account, so the numeric id is derivable
+        # rather than something to copy by hand -- one fewer secret to get
+        # wrong. IG_USER_ID still wins if it is set.
+        try:
+            me = _call("GET", "me", {"fields": "id,username", "access_token": token})
+        except IGError as e:
+            sys.exit("could not look up the account from the token: %s" % e)
+        ig_id = me["id"]
+        print("posting as @%s (id %s, looked up from the token)"
+              % (me.get("username"), ig_id))
 
     try:
-        if a.format == "reel":
-            # media_type=REELS with a public video_url. instagram.com's refusal
-            # of 9:16 is a web-uploader quirk, not an API one -- this path is
-            # the native reel upload and publishes whatever shape it is given.
-            print("\n1. reel container")
-            r = _call("POST", "%s/media" % ig_id,
-                      {"media_type": "REELS", "video_url": urls[0],
-                       "caption": caption, "access_token": token})
-            carousel = r["id"]
-            print("   %s" % carousel)
-            wait_finished(carousel, token, "reel", VIDEO_POLL_TIMEOUT)
-        elif len(urls) == 1:
+        if len(urls) == 1:
             # A lone image carries its own caption and needs no carousel
             # container. Sending is_carousel_item for a single image builds a
             # container that media_publish then refuses, which is the one way

@@ -1,123 +1,162 @@
 #!/usr/bin/env python3
 """
-Read the week's events straight from the live panamalive.ai page.
+Pull the current week's events straight off the live PanamaLive.Ai page.
 
     python3 fetch_site_events.py --out events.json --tx-out tx.json
-    python3 fetch_site_events.py --html saved-page.html --out events.json
+    python3 fetch_site_events.py --html saved_page.html --out events.json   # offline
 
-The site is the source of truth: the weekly pty-week build bakes its rows into
-the page as `const EVENTS = [...]` (plus `BEYOND` for trips outside the city)
-and its translations as `const TX = {...}`. Reading them here means the daily
-post can never drift from what the site shows, and there is no hand-copied
-events.json to go stale.
+The weekly pty-week build embeds the whole week into the page as two JSON
+literals -- `const EVENTS = [...]` and `const TX = {...}` -- written by
+json.dumps, so they parse exactly. Reading them here means the daily post is
+fed by the same data the website shows, with no hand-copied events.json to go
+stale. That staleness is the whole reason this exists: a file holding only two
+days made three consecutive midnight runs find nothing and skip silently.
 
-Field names are mapped to the ones the daily scripts already use
-(d -> date, t -> time, addr -> address). Nothing is invented: a missing time
-stays missing and an em-dash price becomes no price.
+It also does the cleanup that had to be done by hand every single day:
 
-Exit codes: 0 ok, 1 could not fetch or parse (the workflow then falls back to
-the committed events.json). Output files are written only on full success.
+  * the same show listed twice at one venue and time (a ticket seller's entry
+    and a festival's entry for one performance) is collapsed to one row,
+    keeping whichever carries a published price;
+  * one production running at two showtimes becomes one "6 & 8pm" row;
+  * standing museum hours are flagged evergreen so they sort below the
+    things that are actually on tonight;
+  * anything the site marks as outside Panama City is flagged beyond.
+
+It never invents a field. A price of "—" is the site saying "not published",
+so it becomes no price at all, and the poster says TBA.
 """
 import argparse, json, pathlib, re, sys, urllib.request
 
-URL = "https://panamalive.ai/"
-UA = "panamalive-daily/1.0 (+https://github.com/NewCoderInc/panamalive-daily)"
-NONE_MARKS = {"", "—", "-", "–", "n/a", "tba"}
+SITE = "https://panamalive.ai/"
+BEYOND_RE = re.compile(r"Fuera de la ciudad de Panam|Outside Panama City", re.I)
+EVERGREEN_RE = re.compile(r"\s[—-]\s*(visita|visit)\s*$", re.I)
 
 
-def grab(html, name):
-    """Decode the JSON literal assigned to `const NAME =` in the page."""
-    m = re.search(r"(?:const|let|var)\s+%s\s*=\s*" % re.escape(name), html)
-    if not m:
+def grab(src, name):
+    """Return the JSON literal assigned by `const NAME = ...`, honouring strings
+    so a bracket inside a title cannot end the match early."""
+    i = src.find("const %s = " % name)
+    if i < 0:
         return None
-    value, _ = json.JSONDecoder().raw_decode(html, m.end())
-    return value
+    j = src.index("=", i) + 1
+    while src[j] in " \n\t\r":
+        j += 1
+    open_, close = src[j], ("]" if src[j] == "[" else "}")
+    depth, in_str, esc = 0, False, False
+    for k in range(j, len(src)):
+        c = src[k]
+        if in_str:
+            if esc:
+                esc = False
+            elif c == "\\":
+                esc = True
+            elif c == '"':
+                in_str = False
+            continue
+        if c == '"':
+            in_str = True
+        elif c == open_:
+            depth += 1
+        elif c == close:
+            depth -= 1
+            if depth == 0:
+                return json.loads(src[j:k + 1])
+    return None
 
 
-def clean(s):
-    s = (s or "").strip() if isinstance(s, str) else s
-    return None if isinstance(s, str) and s.lower() in NONE_MARKS else s
+def fmt12(t):
+    hh, mm = (int(x) for x in t.split(":")[:2])
+    return ("%d%s" % (hh % 12 or 12, "" if mm == 0 else ":%02d" % mm),
+            "am" if hh < 12 else "pm")
 
 
-def row(e, beyond=False):
-    out = {
-        "date": e.get("d") or e.get("date"),
-        "time": clean(e.get("t") or e.get("time")),
-        "title": clean(e.get("title")),
-        "venue": clean(e.get("venue")),
-        "address": clean(e.get("addr") or e.get("address") or e.get("where")),
-        "cat": clean(e.get("cat")),
-        "price": clean(e.get("price")),
-        "pick": bool(e.get("pick")),
-        "free": bool(e.get("free")),
-        "desc": clean(e.get("desc")),
-        "note": clean(e.get("note")),
-        "src": clean(e.get("src")) or "PanamaLive.Ai",
-        "url": clean(e.get("url")),
-        "beyond": beyond,
-    }
-    # The site lists standing attractions (museums, the Canal) every day as
-    # "<place> — visita". They are real but not *today's* news, so they are
-    # marked evergreen and rank below dated events in select_today.py.
-    if re.search(r"[—-]\s*visita\s*$", out["title"] or "", re.I):
-        out["evergreen"] = True
-    if out["free"] and not out["price"]:
-        out["price"] = "Free"
-    return {k: v for k, v in out.items() if v not in (None, "")}
+def normalize(rows):
+    out = []
+    for r in rows:
+        price = (r.get("price") or "").strip()
+        note = (r.get("note") or "").strip()
+        out.append({
+            "date": r["d"],
+            "time": r.get("t") or None,
+            "title": (r.get("title") or "").strip(),
+            "venue": (r.get("venue") or "").strip(),
+            "address": (r.get("addr") or "").strip(),
+            "cat": r.get("cat") or "Community",
+            "price": None if price in ("", "—", "-") else price,
+            "pick": bool(r.get("pick")),
+            "note": note,
+            "beyond": bool(r.get("_beyond")) or bool(BEYOND_RE.search(note)),
+            "evergreen": bool(EVERGREEN_RE.search(r.get("title") or "")),
+            "src": "PanamaLive.Ai",
+        })
+
+    # 1. One show, two listings: same day, same venue, same start time. Keep the
+    #    one that publishes a price; on a tie, the longer (more descriptive)
+    #    title, which is usually the festival's own programme entry.
+    best = {}
+    for e in out:
+        if not e["time"]:
+            best[id(e)] = e                     # no time -> cannot match safely
+            continue
+        k = (e["date"], e["venue"].lower(), e["time"])
+        cur = best.get(k)
+        if cur is None or (bool(e["price"]), len(e["title"])) > (bool(cur["price"]), len(cur["title"])):
+            best[k] = e
+    out = list(best.values())
+
+    # 2. One production at several showtimes: same day, title and venue.
+    groups = {}
+    for e in out:
+        groups.setdefault((e["date"], e["title"].lower(), e["venue"].lower()), []).append(e)
+    merged = []
+    for evs in groups.values():
+        timed = sorted((e for e in evs if e["time"]), key=lambda e: e["time"])
+        if len(timed) > 1:
+            parts = [fmt12(e["time"]) for e in timed]
+            same = all(p[1] == parts[0][1] for p in parts)
+            label = (" & ".join(p[0] for p in parts) + parts[0][1] if same
+                     else " & ".join(a + m for a, m in parts))
+            first = dict(timed[0]); first["time"] = label
+            merged.append(first)
+            merged += [e for e in evs if not e["time"]]
+        else:
+            merged += evs
+    merged.sort(key=lambda e: (e["date"], e["time"] or "99:99", e["title"]))
+    return merged
 
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--url", default=URL)
-    ap.add_argument("--html", help="read a saved copy of the page instead")
+    ap.add_argument("--url", default=SITE)
+    ap.add_argument("--html", help="read a saved page instead of fetching")
     ap.add_argument("--out", default="events.json")
     ap.add_argument("--tx-out", default="tx.json")
-    ap.add_argument("--timeout", type=int, default=30)
     a = ap.parse_args()
 
-    try:
-        if a.html:
-            html = pathlib.Path(a.html).read_text(encoding="utf-8")
-        else:
-            req = urllib.request.Request(a.url, headers={"User-Agent": UA,
-                                                         "Cache-Control": "no-cache"})
-            with urllib.request.urlopen(req, timeout=a.timeout) as r:
-                html = r.read().decode("utf-8", "replace")
-    except Exception as ex:                               # network, 4xx/5xx
-        print("fetch failed: %s" % ex, file=sys.stderr)
-        return 1
+    if a.html:
+        src = pathlib.Path(a.html).read_text(encoding="utf-8")
+    else:
+        req = urllib.request.Request(a.url, headers={"User-Agent": "panamalive-daily/1.0"})
+        with urllib.request.urlopen(req, timeout=45) as r:
+            src = r.read().decode("utf-8", "replace")
 
-    try:
-        events = grab(html, "EVENTS")
-        beyond = grab(html, "BEYOND") or []
-        tx = grab(html, "TX") or {}
-    except ValueError as ex:
-        print("page template changed - could not parse: %s" % ex, file=sys.stderr)
-        return 1
-    if not isinstance(events, list) or not events:
-        print("no EVENTS array found on the page", file=sys.stderr)
-        return 1
+    rows, tx = grab(src, "EVENTS"), grab(src, "TX")
+    if not rows:
+        sys.exit("no EVENTS array found on %s -- has the page template changed?"
+                 % (a.html or a.url))
 
-    # BEYOND lists the trips outside the city. The page usually repeats them
-    # in EVENTS too; then the EVENTS row (which has the time and category) is
-    # kept and flagged beyond, and only BEYOND-only trips are added.
-    key = lambda e: (e.get("d") or e.get("date"), (e.get("title") or "").strip().lower())
-    far = {key(e) for e in beyond}
-    rows = [row(e, beyond=key(e) in far) for e in events]
-    have = {key(e) for e in events}
-    rows += [row(e, beyond=True) for e in beyond if key(e) not in have]
-    rows = [r for r in rows if r.get("date") and r.get("title")]
-    rows.sort(key=lambda r: (r["date"], r.get("beyond", False), r.get("time") or "99"))
-
-    pathlib.Path(a.out).write_text(json.dumps(rows, ensure_ascii=False, indent=1),
+    events = normalize(rows)
+    pathlib.Path(a.out).write_text(json.dumps(events, ensure_ascii=False, indent=1),
                                    encoding="utf-8")
-    pathlib.Path(a.tx_out).write_text(json.dumps(tx, ensure_ascii=False, indent=1),
-                                      encoding="utf-8")
-    days = sorted({r["date"] for r in rows})
-    n_far = sum(1 for r in rows if r.get("beyond"))
-    print("wrote %s: %d events (%d outside the city) across %s .. %s"
-          % (a.out, len(rows), n_far, days[0], days[-1]))
-    print("wrote %s: %d translations" % (a.tx_out, len(tx)))
+    if tx:
+        pathlib.Path(a.tx_out).write_text(json.dumps(tx, ensure_ascii=False, indent=1),
+                                          encoding="utf-8")
+
+    days = sorted({e["date"] for e in events})
+    print("fetched %d rows -> %d after cleanup, %s .. %s, %d translations"
+          % (len(rows), len(events), days[0], days[-1], len(tx or {})))
+    for d in days:
+        print("   %s  %3d" % (d, sum(e["date"] == d for e in events)))
     return 0
 
 
