@@ -50,7 +50,9 @@ jobs:
 
       - name: Playwright Chromium
         run: |
-          pip install --quiet playwright
+          # Pillow is what build_reel.py scales the tall render with; the
+          # runner has no system PIL, and the reel step dies at import.
+          pip install --quiet playwright pillow
           python -m playwright install --with-deps chromium
 
       - name: Resolve the date in Panama time
