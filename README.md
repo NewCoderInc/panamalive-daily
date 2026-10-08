@@ -155,3 +155,46 @@ with an error that blames the image rather than the timing.
 - 10 slides per carousel — hence the cap of 8 events plus cover and closer
 - JPEG only, 320–1440px wide, aspect ratio 0.80–1.91 (these cards are 0.80)
 - 2,200 caption characters, 30 hashtags
+
+---
+
+## Weekly: PTY Live Mix (the live music reel)
+
+A second workflow, `weekly-mix.yml`, runs every **Thursday at 08:53 Panama
+time** and posts one reel covering the rest of the week's live music. It uses
+the same cloud route as the daily post: read the site, render, commit to
+Pages, publish through Buffer. No computer needs to be on.
+
+```
+  mix_week.py     read EVENTS/TX off panamalive.ai, keep Live Music from today on
+                  -> build/week.json (headline slides + one slide per day) and the caption
+  ptymix.py       render the 9:16 reel with assets/reel-bed.mp3, plus a 4:5 carousel
+  commit          docs/mix/<date>/   (Pages serves the MP4 to Buffer)
+  publish_buffer  --format reel, @thepanamalive.ai only
+  verify_buffer   wait for Buffer to report the post as sent
+  latest.json     docs/mix/latest.json records what happened
+```
+
+The rules that were applied by hand when the format was designed are in
+`mix_week.py`'s docstring. The two that matter most: a show is only
+**headlined** when the site fully confirms it (`verify` false), and a missing
+time or price is left blank rather than printed as "TBA".
+
+`docs/mix/latest.json` is the hand-off to the text message. Its `result` is
+one of `posted`, `queued_unverified`, `skipped`, `failed`, `dry_run` or
+`already_posted`; a scheduled Claude task reads it a little after the run and
+texts the owner. "Posted" is only claimed when Buffer itself reports the post
+as sent.
+
+Try it without posting: Actions -> *Weekly PTY Live Mix reel* -> Run workflow
+with **dry run** ticked, then open `docs/mix/<date>/` on Pages. Locally:
+
+```bash
+python3 scripts/mix_week.py --html fixtures/site-week-2026-10-07.html \
+    --date 2026-10-08 --out build/week.json --caption build/caption.txt
+python3 scripts/ptymix.py build/week.json build/mix assets/reel-bed.mp3 --music-start 24
+```
+
+A date is posted once: `docs/mix/<date>/published.json` is committed after a
+successful post, and a re-run for that date does nothing unless **force** is
+ticked.

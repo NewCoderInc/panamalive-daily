@@ -1,0 +1,203 @@
+name: Weekly PTY Live Mix reel
+
+# Thursday 13:53 UTC = 08:53 in Panama (no DST, so this holds all year).
+# The site's week runs Wednesday to Tuesday, so Thursday morning is the first
+# point at which the new week is certain to be live, and it leaves the whole
+# day for Thursday night's shows to be seen.
+#
+# Like the daily job, the date is resolved in America/Panama, and GitHub's
+# scheduler can run late -- treat 08:53 as "Thursday morning".
+on:
+  schedule:
+    - cron: "53 13 * * 4"
+  workflow_dispatch:
+    inputs:
+      date:
+        description: "First day to include (YYYY-MM-DD). Blank = today in Panama."
+        required: false
+      dry_run:
+        description: "Build and commit the reel, but do not post"
+        type: boolean
+        default: false
+      force:
+        description: "Post even if this date was already posted"
+        type: boolean
+        default: false
+
+concurrency:
+  group: weekly-mix
+  cancel-in-progress: false
+
+permissions:
+  contents: write            # to commit the reel for Pages to serve
+
+jobs:
+  mix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # ptymix.py draws with DejaVu Sans Condensed Bold and Liberation Sans.
+      # The condensed cut lives in fonts-dejavu-extra, not -core: without it
+      # the script stops at the first font lookup rather than drawing the
+      # headlines in something else.
+      - name: Fonts and ffmpeg
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq fonts-dejavu-core fonts-dejavu-extra fonts-liberation ffmpeg
+          pip install --quiet pillow
+
+      - name: Resolve the date in Panama time
+        id: d
+        run: |
+          D="${{ github.event.inputs.date }}"
+          [ -z "$D" ] && D=$(TZ=America/Panama date +%F)
+          echo "date=$D" >> "$GITHUB_OUTPUT"
+          echo "dir=docs/mix/$D" >> "$GITHUB_OUTPUT"
+          echo "Building PTY Live Mix from $D"
+
+      - name: Already posted?
+        id: done
+        run: |
+          # published.json is committed after a successful post, so a second
+          # run for the same date (a retry, or the schedule firing twice) is a
+          # no-op instead of a duplicate reel.
+          if [ -f "${{ steps.d.outputs.dir }}/published.json" ] && [ "${{ github.event.inputs.force }}" != "true" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::${{ steps.d.outputs.date }} was already posted - nothing to do."
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Read the week's live music from the site
+        id: wk
+        if: steps.done.outputs.skip != 'true'
+        run: |
+          mkdir -p build
+          set +e
+          python3 scripts/mix_week.py --date "${{ steps.d.outputs.date }}" \
+              --out build/week.json --caption build/caption.txt | tee build/week.log
+          code=${PIPESTATUS[0]}
+          set -e
+          # exit 3 is the deliberate "nothing to post" signal, not a failure.
+          if [ $code -eq 3 ]; then
+            echo "empty=true" >> "$GITHUB_OUTPUT"
+            echo "why=$(tail -n1 build/week.log | sed 's/^nothing to post: //')" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          [ $code -eq 0 ] || exit $code
+          echo "empty=false" >> "$GITHUB_OUTPUT"
+          echo "range=$(python3 -c "import json;print(json.load(open('build/week.json'))['range'])")" >> "$GITHUB_OUTPUT"
+
+      - name: Render the reel and the carousel
+        if: steps.done.outputs.skip != 'true' && steps.wk.outputs.empty != 'true'
+        run: |
+          # assets/reel-bed.mp3 is the licensed backing track the daily reel
+          # uses; 0:24 is where it is already grooving. With music given, the
+          # folder ends up holding exactly one MP4, which is the one posted.
+          rm -rf "${{ steps.d.outputs.dir }}"
+          python3 scripts/ptymix.py build/week.json "${{ steps.d.outputs.dir }}" \
+              assets/reel-bed.mp3 --music-start 24
+          cp build/caption.txt "${{ steps.d.outputs.dir }}/caption.txt"
+
+      - name: Publish the reel to GitHub Pages
+        if: steps.done.outputs.skip != 'true' && steps.wk.outputs.empty != 'true'
+        run: |
+          git config user.name  "panamalive-bot"
+          git config user.email "actions@github.com"
+          git add "${{ steps.d.outputs.dir }}"
+          git diff --cached --quiet || git commit -m "PTY Live Mix for ${{ steps.d.outputs.date }}"
+          git pull --rebase --quiet
+          git push
+
+      - name: Post the reel via Buffer
+        id: post
+        if: steps.done.outputs.skip != 'true' && steps.wk.outputs.empty != 'true' && github.event.inputs.dry_run != 'true'
+        env:
+          BUFFER_API_KEY:    ${{ secrets.BUFFER_API_KEY }}
+          BUFFER_CHANNEL_ID: ${{ secrets.BUFFER_CHANNEL_ID }}
+        run: |
+          # Same publisher as the daily reel. It refuses any channel that is
+          # not @thepanamalive.ai, so a second Instagram account connected to
+          # Buffer can never receive this.
+          if [ -z "$BUFFER_API_KEY" ]; then
+            echo "::error::BUFFER_API_KEY is not set - the reel was built but cannot be posted."
+            exit 1
+          fi
+          python3 scripts/publish_buffer.py "${{ steps.d.outputs.dir }}" \
+              --caption build/caption.txt \
+              --base-url "${{ vars.PAGES_BASE_URL }}/mix/${{ steps.d.outputs.date }}" \
+              --state "${{ steps.d.outputs.dir }}/published.json" \
+              --format reel --wait-for-urls 420 \
+              --summary "$GITHUB_STEP_SUMMARY"
+          # Queued is not live. Wait for Buffer to say it went out.
+          python3 scripts/verify_buffer.py "${{ steps.d.outputs.dir }}/published.json" 420
+
+      - name: Record the outcome
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+          DATE: ${{ steps.d.outputs.date }}
+          DIR: ${{ steps.d.outputs.dir }}
+          RANGE: ${{ steps.wk.outputs.range }}
+          SKIP: ${{ steps.done.outputs.skip }}
+          EMPTY: ${{ steps.wk.outputs.empty }}
+          WHY: ${{ steps.wk.outputs.why }}
+          DRY: ${{ github.event.inputs.dry_run }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          # docs/mix/latest.json is what the text-message check reads: one
+          # small public file that says what this run did, so the check does
+          # not have to interpret a workflow log.
+          mkdir -p docs/mix
+          python3 - <<'PY'
+          import json, os, pathlib, time
+          e = os.environ
+          pub = pathlib.Path(e.get("DIR") or "x") / "published.json"
+          rec = json.loads(pub.read_text()) if pub.exists() else {}
+          if e.get("SKIP") == "true":
+              result, reason = "already_posted", ""
+          elif e.get("EMPTY") == "true":
+              result, reason = "skipped", e.get("WHY", "")
+          elif e.get("JOB_STATUS") != "success":
+              result, reason = "failed", "a workflow step failed - see the run"
+          elif e.get("DRY") == "true":
+              result, reason = "dry_run", ""
+          elif rec.get("verified"):
+              result, reason = "posted", ""
+          elif rec.get("buffer_post_id"):
+              result, reason = "queued_unverified", "Buffer status: %s" % rec.get("status", "unknown")
+          else:
+              result, reason = "failed", "nothing was queued in Buffer"
+          out = {"date": e.get("DATE", ""), "range": e.get("RANGE", ""), "result": result,
+                 "reason": reason, "run": e.get("RUN_URL", ""),
+                 "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+          pathlib.Path("docs/mix/latest.json").write_text(json.dumps(out, indent=1) + "\n")
+          print(out)
+          PY
+          git config user.name  "panamalive-bot"
+          git config user.email "actions@github.com"
+          git add docs/mix
+          git diff --cached --quiet || git commit -m "PTY Live Mix status for ${{ steps.d.outputs.date }}"
+          git pull --rebase --quiet || true
+          git push || echo "::warning::could not push the status file"
+
+      - name: Nothing to post this week
+        if: steps.wk.outputs.empty == 'true'
+        run: |
+          echo "::warning::No PTY Live Mix for ${{ steps.d.outputs.date }}: ${{ steps.wk.outputs.why }}. The weekly pty-week build probably has not been published yet."
+
+      - name: Keep the reels from growing forever
+        if: steps.done.outputs.skip != 'true' && steps.wk.outputs.empty != 'true'
+        continue-on-error: true
+        run: |
+          # Each week is ~9 MB. Instagram has its own copy once posted; keep
+          # eight weeks for spot-checks.
+          cd docs/mix && ls -d 20*-*-* 2>/dev/null | sort | head -n -8 | xargs -r git rm -rq --
+          cd ../..
+          git diff --cached --quiet || { git commit -m "Prune PTY Live Mix reels older than 8 weeks"; git pull --rebase --quiet; git push; }
