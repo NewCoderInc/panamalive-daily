@@ -215,14 +215,15 @@ jobs:
               --summary "$GITHUB_STEP_SUMMARY"
 
       - name: Also post the reel via Buffer
-        if: steps.sel.outputs.skip != 'true' && steps.tok.outputs.via == 'buffer' && vars.POST_REEL == 'true' && github.event.inputs.dry_run != 'true'
+        if: steps.sel.outputs.skip != 'true' && steps.tok.outputs.via == 'buffer' && vars.POST_REEL != 'false' && github.event.inputs.dry_run != 'true'
         env:
           BUFFER_API_KEY:    ${{ secrets.BUFFER_API_KEY }}
           BUFFER_CHANNEL_ID: ${{ secrets.BUFFER_CHANNEL_ID }}
         run: |
-          # Set the repo variable POST_REEL=true to publish the reel as well as
-          # the poster. It is a separate post, queued three minutes after the
-          # poster so the two do not land in the same minute.
+          # The reel goes out with the poster every night; set the repo
+          # variable POST_REEL=false to stop it. It is a separate post, queued
+          # three minutes after the poster so the two do not land in the same
+          # minute.
           python3 scripts/publish_buffer.py "docs/${{ steps.d.outputs.date }}" \
               --caption build/caption-reel.txt \
               --base-url "${{ vars.PAGES_BASE_URL }}/${{ steps.d.outputs.date }}" \
@@ -230,6 +231,64 @@ jobs:
               --format reel --delay-minutes 5 \
               --wait-for-urls 300 \
               --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Record the outcome
+        if: always()
+        env:
+          BUFFER_API_KEY: ${{ secrets.BUFFER_API_KEY }}
+          JOB_STATUS: ${{ job.status }}
+          DATE: ${{ steps.d.outputs.date }}
+          SKIP: ${{ steps.sel.outputs.skip }}
+          VIA: ${{ steps.tok.outputs.via }}
+          DRY: ${{ github.event.inputs.dry_run }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          # docs/daily-status.json is what the nightly text-message check
+          # reads. Queued is not live, so each post is followed until Buffer
+          # reports it sent; "posted" is only written for that.
+          for f in "build/published-$DATE.json" "build/published-reel-$DATE.json"; do
+            if [ -f "$f" ]; then python3 scripts/verify_buffer.py "$f" 360 || true; fi
+          done
+          python3 - <<'PY'
+          import json, os, pathlib, time
+          e = os.environ
+          def rec(name):
+              p = pathlib.Path("build") / name
+              return json.loads(p.read_text()) if p.exists() else {}
+          poster, reel = rec("published-%s.json" % e["DATE"]), rec("published-reel-%s.json" % e["DATE"])
+          def state(r):
+              return "sent" if r.get("verified") else ("queued" if r.get("buffer_post_id") else "none")
+          reason = ""
+          if e.get("SKIP") == "true":
+              result, reason = "skipped", "no events on panamalive.ai for this date"
+          elif e.get("JOB_STATUS") != "success":
+              result, reason = "failed", "a workflow step failed - see the run"
+          elif e.get("DRY") == "true":
+              result = "dry_run"
+          elif e.get("VIA") == "none":
+              result, reason = "built_not_posted", "no publisher is configured"
+          elif e.get("VIA") == "buffer":
+              ps, rs = state(poster), state(reel)
+              if ps == "sent" and rs in ("sent", "none"):
+                  result = "posted"
+              elif ps == "none":
+                  result, reason = "failed", "the poster was not queued in Buffer"
+              else:
+                  result, reason = "queued_unverified", "poster %s, reel %s" % (ps, rs)
+          else:
+              result = "posted"
+          out = {"date": e.get("DATE", ""), "result": result, "reason": reason,
+                 "poster": state(poster), "reel": state(reel), "run": e.get("RUN_URL", ""),
+                 "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+          pathlib.Path("docs/daily-status.json").write_text(json.dumps(out, indent=1) + "\n")
+          print(out)
+          PY
+          git config user.name  "panamalive-bot"
+          git config user.email "actions@github.com"
+          git add docs/daily-status.json
+          git diff --cached --quiet || git commit -m "Daily post status for $DATE"
+          git pull --rebase --quiet || true
+          git push || echo "::warning::could not push the status file"
 
       - name: Where to find today's post
         if: steps.sel.outputs.skip != 'true' && steps.tok.outputs.via == 'none'

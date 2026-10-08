@@ -66,20 +66,30 @@ def find_instagram_channel(api, key, want_id=None):
         raise BufferError("this API key sees no Buffer organizations")
     seen = []
     for org in orgs:
-        try:
-            d = gql(api, key, "query { organization(id: %s) { channels { id service name } } }"
-                    % lit(org["id"]))
-            chans = ((d.get("organization") or {}).get("channels")) or []
-        except BufferError:
-            # The docs show both query shapes; accept whichever this account has.
-            d = gql(api, key, "query { channels(organizationId: %s) { id service name } }"
-                    % lit(org["id"]))
-            chans = d.get("channels") or []
+        chans = None
+        # Buffer changed this query in 2026: it is now channels(input: {...}).
+        # The two older shapes are kept as fallbacks, but they were both being
+        # rejected by 8 Oct 2026, which silently stopped every cloud post.
+        for q, pick in (
+            ("query { channels(input: { organizationId: %s }) { id service name displayName } }",
+             lambda d: d.get("channels")),
+            ("query { organization(id: %s) { channels { id service name } } }",
+             lambda d: (d.get("organization") or {}).get("channels")),
+            ("query { channels(organizationId: %s) { id service name } }",
+             lambda d: d.get("channels")),
+        ):
+            try:
+                chans = pick(gql(api, key, q % lit(org["id"]))) or []
+                break
+            except BufferError as e:
+                last = e
+        if chans is None:
+            raise last
         for c in chans:
             seen.append("%s (%s)" % (c.get("name"), c.get("service")))
-            name = (c.get("name") or "").strip().lstrip("@").lower()
+            names = {(c.get(k) or "").strip().lstrip("@").lower() for k in ("name", "displayName")}
             if ("instagram" in (c.get("service") or "").lower()
-                    and name == TARGET_HANDLE
+                    and TARGET_HANDLE in names
                     and (not want_id or c.get("id") == want_id)):
                 return c["id"], c.get("name")
     raise BufferError("no Instagram channel named @%s%s in Buffer -- refusing to post "
@@ -150,13 +160,24 @@ def main():
 
     due = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=a.delay_minutes)
            ).strftime("%Y-%m-%dT%H:%M:%S.000Z")
+    # Buffer now refuses an Instagram post that does not say what it is:
+    # "Instagram posts require a type (post, story, or reel)". Its reference
+    # shows no full example, so each request is tried in the shapes below and
+    # the first one accepted wins. A rejected shape creates nothing, so moving
+    # on to the next cannot double-post.
     if a.format == "reel":
         # thumbnailOffset picks the cover frame: 400ms in, while the masthead
         # is still on screen, so the grid thumbnail shows the date rather than
         # a half-scrolled list.
-        assets = "{ video: { url: %s, metadata: { thumbnailOffset: 400 } } }" % lit(urls[0])
+        thumb = "{ video: { url: %s, metadata: { thumbnailOffset: 400 } } }" % lit(urls[0])
+        plain = "{ video: { url: %s } }" % lit(urls[0])
+        reel = "metadata: { instagram: { type: reel, shouldShareToFeed: true } }"
+        attempts = [(thumb, reel), (plain, reel), (thumb, "")]
     else:
-        assets = ", ".join("{ image: { url: %s } }" % lit(u) for u in urls)
+        imgs_ = ", ".join("{ image: { url: %s } }" % lit(u) for u in urls)
+        attempts = [(imgs_, "metadata: { instagram: { type: post, shouldShareToFeed: true } }"),
+                    (imgs_, "metadata: { instagram: { type: post } }"),
+                    (imgs_, "")]
     print("buffer: %d %s, %d-char caption, due %s"
           % (len(urls), "video" if a.format == "reel" else "image(s)",
              len(caption), due))
@@ -182,7 +203,10 @@ def main():
         channel, name = find_instagram_channel(a.api, key, want)
         print("channel: %s %s" % (channel, name))
 
-        d = gql(a.api, key, """mutation {
+        post, why = None, []
+        for assets, meta in attempts:
+            try:
+                d = gql(a.api, key, """mutation {
   createPost(input: {
     text: %s
     channelId: %s
@@ -190,22 +214,26 @@ def main():
     mode: customScheduled
     dueAt: %s
     assets: [%s]
+    %s
   }) {
     ... on PostActionSuccess { post { id status dueAt } }
     ... on MutationError { message }
   }
-}""" % (lit(caption), lit(channel), lit(due), assets))
+}""" % (lit(caption), lit(channel), lit(due), assets, meta))
+            except BufferError as e:
+                why.append(str(e))
+                continue
+            res = d.get("createPost") or {}
+            if (res.get("post") or {}).get("id"):
+                post = res["post"]
+                break
+            why.append(res.get("message") or json.dumps(d)[:300])
     except BufferError as e:
         print("\nFAILED: %s" % e, file=sys.stderr)
         return 1
 
-    res = d.get("createPost") or {}
-    if res.get("message"):
-        print("\nFAILED: Buffer refused the post: %s" % res["message"], file=sys.stderr)
-        return 1
-    post = res.get("post") or {}
-    if not post.get("id"):
-        print("\nFAILED: unexpected response from Buffer: %s" % json.dumps(d)[:400],
+    if not post:
+        print("\nFAILED: Buffer accepted none of the request shapes: %s" % " | ".join(why),
               file=sys.stderr)
         return 1
 

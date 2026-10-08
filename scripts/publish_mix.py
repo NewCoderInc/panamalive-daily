@@ -7,20 +7,13 @@ Publish the weekly PTY Live Mix reel to Instagram through Buffer's API.
         --base-url https://newcoderinc.github.io/panamalive-daily/mix/2026-10-08 \
         --state docs/mix/2026-10-08/published.json
 
-Why this is not publish_buffer.py: on its first cloud run (8 Oct 2026) the
-weekly reel failed in publish_buffer.py's channel lookup --
+It is separate from publish_buffer.py because it was written the morning the
+weekly reel first failed to post (8 Oct 2026), when Buffer's API had started
+requiring `channels(input: { organizationId })` and an explicit Instagram post
+type. publish_buffer.py has since been given the same fixes; this file stays
+so the weekly reel does not change behaviour whenever the daily one is tuned.
 
-    Unknown argument "organizationId" on field "Query.channels".
-    Field "channels" argument "input" of type "ChannelsInput!" is required
-
-Buffer's API now wants `channels(input: { organizationId })`. The daily job
-fails on the same line every night, and its posts have been going out through
-the standby route instead. Fixing the shared file would switch the daily cloud
-post back on while that standby is still posting, and the account would get
-every day twice. So the weekly reel has its own publisher, and the daily one
-is left exactly as it is until its owner decides which route should post.
-
-Two things it does that the shared file does not:
+Two things it does:
 
   * the channel is matched on `name` OR `displayName`, still only ever
     @thepanamalive.ai -- any other channel is refused;
