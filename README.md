@@ -170,7 +170,7 @@ Pages, publish through Buffer. No computer needs to be on.
                   -> build/week.json (headline slides + one slide per day) and the caption
   ptymix.py       render the 9:16 reel with assets/reel-bed.mp3, plus a 4:5 carousel
   commit          docs/mix/<date>/   (Pages serves the MP4 to Buffer)
-  publish_buffer  --format reel, @thepanamalive.ai only
+  publish_mix     the reel, @thepanamalive.ai only
   verify_buffer   wait for Buffer to report the post as sent
   latest.json     docs/mix/latest.json records what happened
 ```

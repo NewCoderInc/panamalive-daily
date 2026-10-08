@@ -122,18 +122,18 @@ jobs:
           BUFFER_API_KEY:    ${{ secrets.BUFFER_API_KEY }}
           BUFFER_CHANNEL_ID: ${{ secrets.BUFFER_CHANNEL_ID }}
         run: |
-          # Same publisher as the daily reel. It refuses any channel that is
-          # not @thepanamalive.ai, so a second Instagram account connected to
-          # Buffer can never receive this.
+          # publish_mix.py, not publish_buffer.py: see its docstring. It refuses
+          # any channel that is not @thepanamalive.ai, so a second Instagram
+          # account connected to Buffer can never receive this.
           if [ -z "$BUFFER_API_KEY" ]; then
             echo "::error::BUFFER_API_KEY is not set - the reel was built but cannot be posted."
             exit 1
           fi
-          python3 scripts/publish_buffer.py "${{ steps.d.outputs.dir }}" \
+          python3 scripts/publish_mix.py "${{ steps.d.outputs.dir }}" \
               --caption build/caption.txt \
               --base-url "${{ vars.PAGES_BASE_URL }}/mix/${{ steps.d.outputs.date }}" \
               --state "${{ steps.d.outputs.dir }}/published.json" \
-              --format reel --wait-for-urls 420 \
+              --wait-for-urls 420 \
               --summary "$GITHUB_STEP_SUMMARY"
           # Queued is not live. Wait for Buffer to say it went out.
           python3 scripts/verify_buffer.py "${{ steps.d.outputs.dir }}/published.json" 420
