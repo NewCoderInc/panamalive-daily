@@ -1,0 +1,8 @@
+{
+ "date": "2026-10-08",
+ "range": "Oct 7 \u2013 13",
+ "result": "failed",
+ "reason": "a workflow step failed - see the run",
+ "run": "https://github.com/NewCoderInc/panamalive-daily/actions/runs/37797331488",
+ "at": "2026-10-08T15:04:52Z"
+}
