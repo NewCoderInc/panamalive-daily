@@ -1,15 +1,16 @@
 name: Weekly PTY Live Mix reel
 
-# Thursday 13:53 UTC = 08:53 in Panama (no DST, so this holds all year).
-# The site's week runs Wednesday to Tuesday, so Thursday morning is the first
-# point at which the new week is certain to be live, and it leaves the whole
-# day for Thursday night's shows to be seen.
+# Thursday 05:07 UTC = 00:07 in Panama (no DST, so this holds all year).
+# GitHub's scheduler often starts hours late -- the first scheduled start on
+# 8 Oct 2026 never fired at all, and on 15 Oct the run began four hours
+# behind. Starting just after midnight means even a long delay still lands
+# the reel by Thursday morning. The site's week runs Wednesday to Tuesday, so
+# the new week is already live by then.
 #
-# Like the daily job, the date is resolved in America/Panama, and GitHub's
-# scheduler can run late -- treat 08:53 as "Thursday morning".
+# The date is resolved in America/Panama, never the runner's UTC.
 on:
   schedule:
-    - cron: "53 13 * * 4"
+    - cron: "7 5 * * 4"
   workflow_dispatch:
     inputs:
       date:
