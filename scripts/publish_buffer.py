@@ -205,6 +205,12 @@ def main():
 
         post, why = None, []
         for assets, meta in attempts:
+            # The due time is set here, at the moment of sending, not before the
+            # wait for Pages: on 15 Oct 2026 Pages took two minutes to serve the
+            # image, the due time computed earlier had already passed, and
+            # Buffer refused the post as "Scheduled time must be in the future".
+            due = (dt.datetime.now(dt.timezone.utc) + dt.timedelta(minutes=a.delay_minutes)
+                   ).strftime("%Y-%m-%dT%H:%M:%S.000Z")
             try:
                 d = gql(a.api, key, """mutation {
   createPost(input: {
