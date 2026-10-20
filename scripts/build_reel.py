@@ -255,8 +255,13 @@ def main():
         # On a still frame the rows fill the whole frame, so the 0.655 slot
         # lands on top of the last events; drop the band nearer the footer.
         band_y = int(FRAME_H * (0.76 if still is not None else 0.655))
-        vf += (",drawbox=x=0:y=%d:w=iw:h=236:color=0x140a1e@0.86:t=fill"
-               ":enable='gte(t,%.2f)'" % (band_y, t0))
+        # A scrolling reel has run past its last row by the time the card
+        # appears, so a translucent band there sits on empty space. A still
+        # frame has not moved: the rows are still underneath, and at 0.86 they
+        # read through the band as a smear behind the type. Go opaque there.
+        band_a = 1.0 if still is not None else 0.86
+        vf += (",drawbox=x=0:y=%d:w=iw:h=236:color=0x140a1e@%.2f:t=fill"
+               ":enable='gte(t,%.2f)'" % (band_y, band_a, t0))
         lines = [l.strip() for l in a.cta.split("|")]
         for i, line in enumerate(lines):
             vf += (",drawtext=fontfile=%s:text='%s':fontsize=%d"
