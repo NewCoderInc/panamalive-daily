@@ -130,7 +130,16 @@ jobs:
           python3 scripts/select_today.py events.json \
               --date "${{ steps.d.outputs.date }}" --out build/reel.json \
               --max 30 --cap-per-cat 99
-          ffmpeg -y -v error -ss 24 -t 14 -i assets/reel-bed.mp3 -vn \
+          # Two licensed beds, alternating by day-of-year so consecutive
+          # days never sound the same. Odd days take A (reel-bed.mp3),
+          # even days take B -- Oct 20 2026 is day 293, hence A.
+          if [ $(( 10#$(date -d "${{ steps.d.outputs.date }}" +%j) % 2 )) -eq 1 ]; then
+            BED=assets/reel-bed.mp3
+          else
+            BED=assets/reel-bed-b.mp3
+          fi
+          echo "backing track: $BED"
+          ffmpeg -y -v error -ss 24 -t 14 -i "$BED" -vn \
               -af "afade=t=in:st=0:d=0.5,afade=t=out:st=12.6:d=1.4,loudnorm=I=-14:TP=-1.5:LRA=11" \
               -ar 48000 -ac 2 build/bed.wav
           python3 scripts/build_reel.py build/reel.json \
