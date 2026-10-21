@@ -45,6 +45,7 @@ GENRES = [
     (r"\bmetal\b", "Metal", "metal"),
     (r"\bpunk\b", "Punk rock", "punk"),
     (r"electr[oó]nic|techno|\bhouse\b|\bdj\b", "Electronic", "electro"),
+    (r"\bdub\b", "Dub", "electro"),
     (r"\bjazz\b", "Jazz", "candle"),
     (r"cuarteto|quartet|sinf[oó]n|orquesta|orchestra|cl[aá]sic|classical", "Classical", "candle"),
     (r"t[ií]pic", "Típico", "vinyl"),
@@ -189,6 +190,11 @@ def build(rows, tx, today):
             lm.append(r)
     total = len(lm)
     lm = [r for r in lm if r["d"] >= today]
+    # PTY Live Mix promotes Panama City. A benefit concert in Chitré is real
+    # live music, but headlining it sends city readers three hours away, so
+    # anything the site flags as outside the city stays off the reel.
+    lm = [r for r in lm if not r.get("_beyond") and not re.search(
+        r"fuera de la ciudad de panam|outside panama city", r.get("note") or "", re.I)]
     if not lm:
         return None, "no live music listed from %s onward" % today
 
