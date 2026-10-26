@@ -1,9 +1,9 @@
 {
- "date": "2026-10-25",
- "result": "posted",
- "reason": "",
- "poster": "sent",
- "reel": "sent",
- "run": "https://github.com/NewCoderInc/panamalive-daily/actions/runs/40180849993",
- "at": "2026-10-25T09:38:13Z"
+ "date": "",
+ "result": "failed",
+ "reason": "a workflow step failed - see the run",
+ "poster": "none",
+ "reel": "none",
+ "run": "https://github.com/NewCoderInc/panamalive-daily/actions/runs/40308929513",
+ "at": "2026-10-26T11:03:19Z"
 }
