@@ -34,23 +34,25 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 from fetch_site_events import grab, SITE  # noqa: E402
 
 ACCENTS = ["#ff3b30", "#22d3ee", "#ff2e7e", "#b06cff", "#ffb020"]
-MAX_FEATURES, MAX_DAY_ROWS, GROUP_ROWS = 6, 8, 2
+MAX_FEATURES, MAX_DAY_ROWS, GROUP_ROWS = 7, 8, 2
 HASHTAGS = "#pty #musicaenvivo #quehacerenpanama #panamacitypanama #PTYLiveMix"
 
 # First match wins, so the specific sits above the general: "Queen rock
 # anthems by candlelight" is a candlelight show, not a rock night.
 GENRES = [
     (r"candlelight|a la luz de las velas", "Classical by candlelight", "candle"),
+    (r"soprano|tenor|[oó]pera\b|recital|\bcoral\b|choral|misa criolla", "Classical", "candle"),
     (r"power metal", "Power metal", "metal"),
     (r"\bmetal\b", "Metal", "metal"),
     (r"\bpunk\b", "Punk rock", "punk"),
+    (r"t[ií]pic", "Típico", "vinyl"),
+    (r"\bsalsa\b", "Salsa", "vinyl"),
+    (r"dancehall", "Dancehall", "vinyl"),
+    (r"reggaet[oó]n", "Reggaeton", "vinyl"),
     (r"electr[oó]nic|techno|\bhouse\b|\bdj\b", "Electronic", "electro"),
     (r"\bdub\b", "Dub", "electro"),
     (r"\bjazz\b", "Jazz", "candle"),
     (r"cuarteto|quartet|sinf[oó]n|orquesta|orchestra|cl[aá]sic|classical", "Classical", "candle"),
-    (r"t[ií]pic", "Típico", "vinyl"),
-    (r"\bsalsa\b", "Salsa", "vinyl"),
-    (r"reggaet[oó]n", "Reggaeton", "vinyl"),
     (r"\breggae\b", "Reggae", "vinyl"),
     (r"\bblues\b", "Blues", "vinyl"),
     (r"tribut", "Tribute", "punk"),
@@ -104,6 +106,18 @@ def price_line(en_price, free):
     if len(p) <= 24:
         return p[0].upper() + p[1:]
     return "From $%s" % amounts[0]
+
+
+def short_name(s):
+    """The caption names each headliner once, in both languages, so it wants
+    the act, not the full billing: "Pasión Vega: «Todo lo que tengo…» (All I
+    Have…)" becomes "Pasión Vega"."""
+    s = re.sub(r"\s*\([^)]*\)\s*$", "", s.strip())
+    for sep in (": ", " — ", " – ", " - "):
+        if sep in s and len(s) > 26:
+            s = s.split(sep, 1)[0]
+    s = re.sub(r"\s+(presents?|presenta|in recital|en recital)$", "", s, flags=re.I)
+    return nice(s)
 
 
 def nice(s):
@@ -232,7 +246,36 @@ def build(rows, tx, today):
     if len(groups) > MAX_FEATURES:
         # Editor's picks first when there are more headliners than slides;
         # the rest still appear on their day slide.
-        keep = sorted(groups, key=lambda g: (not any(x.get("pick") for x in g), g[0]["d"], g[0].get("t") or ""))[:MAX_FEATURES]
+        # Round-robin across days so a busy Wednesday cannot crowd the
+        # weekend's big shows off the reel. Within a day: a series not yet
+        # headlined (one Candlelight slide, not three), then editor's picks,
+        # then shows that publish a price, then the latest start.
+        def series(g):
+            t = en(g[0].get("title")).lower()
+            if "candle" in t:
+                return "candlelight"          # Candlelight / Candle Session: one family
+            return t.split(":", 1)[0].strip()
+
+        def later_first(t):
+            # The night's main act usually starts last; an early slot is
+            # more often an opener, a family show or a free recital.
+            m = re.fullmatch(r"(\d{1,2}):(\d{2})", (t or "").strip())
+            return -(int(m.group(1)) * 60 + int(m.group(2))) if m else 0
+        byday = {}
+        for g in groups:
+            byday.setdefault(g[0]["d"], []).append(g)
+        keep, used_series = [], set()
+        while len(keep) < MAX_FEATURES and any(byday.values()):
+            for d in sorted(byday):
+                if not byday[d] or len(keep) >= MAX_FEATURES:
+                    continue
+                byday[d].sort(key=lambda g: (series(g) in used_series,
+                                             not any(x.get("pick") for x in g),
+                                             not any(x.get("price") for x in g),
+                                             later_first(g[0].get("t"))))
+                g = byday[d].pop(0)
+                keep.append(g)
+                used_series.add(series(g))
         groups = sorted(keep, key=lambda g: (g[0]["d"], g[0].get("t") or ""))
 
     features, names = [], []
@@ -254,7 +297,7 @@ def build(rows, tx, today):
             frows = [[t12(r.get("t")), venue, price_line(en(r.get("price")), r.get("free"))]]
         features.append({"art": art, "color": ACCENTS[i % len(ACCENTS)], "day": short_date(r["d"]),
                          "genre": label, "title": head, "sub": sub, "rows": frows})
-        names.append((nice(head), d_(r["d"]).weekday()))
+        names.append((short_name(head), d_(r["d"]).weekday()))
 
     # ---- day slides: everything from today on ---------------------------
     by_day = {}
