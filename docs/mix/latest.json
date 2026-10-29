@@ -1,8 +1,8 @@
 {
- "date": "2026-10-24",
- "range": "Oct 21 \u2013 27",
- "result": "posted",
- "reason": "",
- "run": "https://github.com/NewCoderInc/panamalive-daily/actions/runs/40124350537",
- "at": "2026-10-24T19:19:17Z"
+ "date": "2026-10-29",
+ "range": "",
+ "result": "skipped",
+ "reason": "the site shows 2026-10-21 to 2026-10-27, which does not include 2026-10-29",
+ "run": "https://github.com/NewCoderInc/panamalive-daily/actions/runs/40865417302",
+ "at": "2026-10-29T11:27:53Z"
 }
