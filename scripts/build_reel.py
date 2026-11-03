@@ -180,7 +180,20 @@ def main():
     ap.add_argument("--out", required=True)
     ap.add_argument("--tx", default=None)
     ap.add_argument("--lang", default="en")
-    ap.add_argument("--seconds", type=float, default=10.0)
+    ap.add_argument("--seconds", type=float, default=None,
+                    help="force a fixed length; default is to derive one from "
+                         "how far the poster has to scroll, so a busy day "
+                         "gets a longer reel rather than a faster one")
+    ap.add_argument("--px-per-sec", type=float, default=48.0, metavar="PX",
+                    help="peak scroll speed. A row is %d px, so 48 px/s puts "
+                         "a new row on screen about every 1.4s -- average "
+                         "reading pace. Lower = slower." % ROW_PX)
+    ap.add_argument("--max-seconds", type=float, default=60.0,
+                    help="never scroll for longer than this, however busy "
+                         "the day; past it the reel speeds up again")
+    ap.add_argument("--still-seconds", type=float, default=14.0,
+                    help="length of a still (non-scrolling) reel, where the "
+                         "whole agenda is on screen from the first frame")
     ap.add_argument("--shape", choices=tuple(SHAPES), default="reel",
                     help="reel = 1080x1920 (9:16), feed = 1080x1350 (4:5, the "
                          "only tall shape Instagram's web uploader accepts)")
@@ -191,6 +204,9 @@ def main():
                     help="still seconds at the start and at the end")
     ap.add_argument("--audio", default=None,
                     help="WAV/MP3 to lay under the video (trimmed to length)")
+    ap.add_argument("--audio-start", type=float, default=24.0, metavar="SEC",
+                    help="seconds into the track to start, so the bed opens "
+                         "on the groove rather than a cold intro")
     ap.add_argument("--cta", default=None,
                     help="call to action painted over the last seconds")
     ap.add_argument("--cta-seconds", type=float, default=3.2,
@@ -230,19 +246,39 @@ def main():
     if still is not None:
         print("   still frame: only %+dpx past the frame, no scroll (zoom %.2f)"
               % (tall - FRAME_H, still))
+        seconds = a.seconds or a.still_seconds
         vf = "scale=%d:%d" % (FRAME_W, FRAME_H)
     else:
         if tall < FRAME_H:
             sys.exit("tall render (%dpx) is shorter than the frame and would "
                      "not fit still either" % tall)
-        travel = a.seconds - 2 * a.hold
+        # A fixed length makes a busy day scroll faster than it can be read:
+        # the same 11 seconds carried 636px on a 20-event day and 1818px on a
+        # 36-event one. Length follows the distance instead, so the speed --
+        # the thing a reader actually experiences -- stays put.
+        #
+        # The easing is smoothstep, whose peak rate is 1.5x its mean, and it
+        # is the peak that outruns the eye. So size the travel off the peak.
+        distance = tall - FRAME_H
+        travel = 1.5 * distance / a.px_per_sec
+        seconds = 2 * a.hold + travel
+        if seconds > a.max_seconds:
+            seconds = a.max_seconds
+            travel = seconds - 2 * a.hold
+            print("   capped at %.0fs: %d events scroll at %.0f px/s peak, "
+                  "faster than the %.0f asked for"
+                  % (seconds, len(d["shown"]), 1.5 * distance / travel,
+                     a.px_per_sec))
+        print("   scroll: %dpx over %.1fs (%.0f px/s peak, ~%.1fs per row)"
+              % (distance, travel, 1.5 * distance / travel,
+                 travel * ROW_PX / distance))
         # smoothstep, so the scroll eases in and out instead of starting at speed
         p = "clip((t-%.3f)/%.3f,0,1)" % (a.hold, travel)
         y = "(ih-%d)*(%s*%s*(3-2*%s))" % (FRAME_H, p, p, p)
         vf = "crop=%d:%d:0:'%s'" % (FRAME_W, FRAME_H, y)
 
     if a.cta:
-        t0 = a.seconds - a.cta_seconds
+        t0 = seconds - a.cta_seconds
         # Fade in over 0.5s rather than cutting, and sit above the pink footer
         # band, which is where the eye already is by the end of the scroll.
         # Two lines, because one line of this at a readable size is wider than
@@ -273,14 +309,20 @@ def main():
 
     cmd = ["ffmpeg", "-y", "-loop", "1", "-i", str(png)]
     if a.audio:
-        cmd += ["-i", a.audio]
-    cmd += ["-t", "%.2f" % a.seconds, "-vf", vf,
+        # Trim the bed here rather than upstream. The length is only known
+        # once the scroll distance is, so a bed cut to a guessed length is
+        # either short -- which ends the reel early, -shortest being on -- or
+        # long and abruptly clipped. -ss selects the start before decoding.
+        cmd += ["-ss", "%.2f" % a.audio_start, "-i", a.audio]
+    cmd += ["-t", "%.2f" % seconds, "-vf", vf,
             "-r", "30", "-c:v", "libx264", "-preset", "slow", "-crf", "20"]
     if a.audio:
         # Instagram re-encodes anyway; AAC 128k stereo is what it expects, and
         # -shortest keeps a longer bed from padding the video.
-        cmd += ["-c:a", "aac", "-b:a", "128k", "-ac", "2", "-shortest",
-                "-af", "afade=t=out:st=%.2f:d=1.0" % max(a.seconds - 1.0, 0)]
+        af = ("afade=t=in:st=0:d=0.5,afade=t=out:st=%.2f:d=1.4,"
+              "loudnorm=I=-14:TP=-1.5:LRA=11" % max(seconds - 1.4, 0))
+        cmd += ["-c:a", "aac", "-b:a", "128k", "-ac", "2", "-ar", "48000",
+                "-shortest", "-af", af]
     cmd += ["-movflags", "+faststart", str(out)]
     r = subprocess.run(cmd, capture_output=True, text=True)
     if r.returncode:
@@ -288,7 +330,7 @@ def main():
         return 1
     png.unlink(missing_ok=True)
     print("wrote %s  (%.1f MB, %.0fs, %dx%d)"
-          % (out, out.stat().st_size / 1e6, a.seconds, FRAME_W, FRAME_H))
+          % (out, out.stat().st_size / 1e6, seconds, FRAME_W, FRAME_H))
     return 0
 
 

@@ -81,14 +81,32 @@ def line_for(e):
     return "%s %s%s%s" % (em, title, (" — " + tail) if tail else "", flag)
 
 
-def build(d, handle_week="PanamaLive.Ai", promo="", max_tags=MAX_TAGS):
-    """Caption = the headline, an optional promo block, then the hashtags.
+def agenda_block(events):
+    """The reel's own content as text, grouped the way the reel groups it.
 
-    Everything factual -- the event list, the times, the prices -- is on the
-    poster, and the account's editorial line is that the caption must not
-    repeat it. The sourcing note and the "full week" line came out for the
-    same reason. The space between the headline and the tags is reserved for
-    marketing copy, which --promo drops in unchanged."""
+    Category order follows the selection, not the alphabet, so the caption
+    reads down in the same order the video scrolls -- someone who paused the
+    reel half way can find the line they were looking at."""
+    out, seen = [], None
+    for e in events:
+        cat = (e.get("cat") or "").strip()
+        if cat != seen:
+            out.append("")
+            out.append(cat.upper())
+            seen = cat
+        out.append(line_for(e))
+    return "\n".join(out).strip()
+
+
+def build(d, handle_week="PanamaLive.Ai", promo="", max_tags=MAX_TAGS):
+    """Caption = the headline, the day's agenda, an optional promo, the tags.
+
+    The agenda is the same content the reel scrolls. A reel plays once at the
+    speed it was rendered; the caption sits still and can be re-read, which
+    is where someone deciding at 6pm actually reads the times and prices.
+
+    The space between the agenda and the tags stays reserved for marketing
+    copy, which --promo drops in unchanged."""
     head = "WHAT'S ON IN PANAMA CITY — %s, %s" % (d["weekday"], d["pretty"])
 
     # Tags still follow what is actually on today, so reach matches the day.
@@ -98,11 +116,28 @@ def build(d, handle_week="PanamaLive.Ai", promo="", max_tags=MAX_TAGS):
             if t not in tags:
                 tags.append(t)
     tags = tags[:max_tags]
+    tagline = " ".join(tags)
 
-    parts = [head] + ([promo.strip()] if promo.strip() else []) + [" ".join(tags)]
-    cap = "\n\n".join(parts)
-    if len(cap) > MAX_CHARS:            # only reachable via a long promo, so
-        over = len(cap) - MAX_CHARS     # trim the promo, never the tags
+    def assemble(events, dropped):
+        agenda = agenda_block(events)
+        if dropped:
+            agenda += "\n\n+%d more on PanamaLive.Ai" % dropped
+        parts = [head, agenda]
+        if promo.strip():
+            parts.append(promo.strip())
+        parts.append(tagline)
+        return "\n\n".join(parts)
+
+    # 2,200 characters is a hard API limit, not a style guide -- going over
+    # rejects the whole post. The selection is already in priority order, so
+    # a day too busy to fit loses its last rows rather than its first.
+    shown = list(d["shown"])
+    cap = assemble(shown, 0)
+    while len(cap) > MAX_CHARS and len(shown) > 1:
+        shown.pop()
+        cap = assemble(shown, len(d["shown"]) - len(shown))
+    if len(cap) > MAX_CHARS:            # nothing left to drop but the promo
+        over = len(cap) - MAX_CHARS
         raise SystemExit("caption is %d chars -- shorten the promo text by %d"
                          % (len(cap), over))
     return cap
