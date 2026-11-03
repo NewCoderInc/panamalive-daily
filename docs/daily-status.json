@@ -1,9 +1,9 @@
 {
  "date": "2026-11-03",
- "result": "posted",
+ "result": "dry_run",
  "reason": "",
- "poster": "sent",
- "reel": "sent",
- "run": "https://github.com/NewCoderInc/panamalive-daily/actions/runs/41636047074",
- "at": "2026-11-03T12:38:02Z"
+ "poster": "none",
+ "reel": "none",
+ "run": "https://github.com/NewCoderInc/panamalive-daily/actions/runs/41708539319",
+ "at": "2026-11-03T20:02:27Z"
 }
