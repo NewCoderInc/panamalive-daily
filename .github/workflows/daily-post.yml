@@ -125,8 +125,9 @@ jobs:
         continue-on-error: true
         run: |
           # The reel carries EVERY event -- it scrolls, so it has room the 4:5
-          # poster does not. assets/reel-bed.mp3 is the licensed backing track;
-          # the 12s window from 0:24 is where it is already grooving.
+          # poster does not. Length is not fixed any more: build_reel.py
+          # sizes it from the scroll distance so the speed stays readable,
+          # and trims the bed itself, since only it knows the length.
           python3 scripts/select_today.py events.json \
               --date "${{ steps.d.outputs.date }}" --out build/reel.json \
               --max 30 --cap-per-cat 99
@@ -139,12 +140,9 @@ jobs:
             BED=assets/reel-bed-b.mp3
           fi
           echo "backing track: $BED"
-          ffmpeg -y -v error -ss 24 -t 14 -i "$BED" -vn \
-              -af "afade=t=in:st=0:d=0.5,afade=t=out:st=12.6:d=1.4,loudnorm=I=-14:TP=-1.5:LRA=11" \
-              -ar 48000 -ac 2 build/bed.wav
           python3 scripts/build_reel.py build/reel.json \
               --out "docs/${{ steps.d.outputs.date }}/${{ steps.d.outputs.poster }}_REEL.mp4" \
-              --tx tx.json --seconds 14 --zoom 1.45 --audio build/bed.wav \
+              --tx tx.json --zoom 1.45 --audio "$BED" \
               --cta "FOLLOW & LIKE | @thepanamalive.ai · daily"
 
       - name: Build the phone page for manual posting
