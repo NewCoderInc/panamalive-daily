@@ -86,15 +86,25 @@ def agenda_block(events):
 
     Category order follows the selection, not the alphabet, so the caption
     reads down in the same order the video scrolls -- someone who paused the
-    reel half way can find the line they were looking at."""
-    out, seen = [], None
+    reel half way can find the line they were looking at.
+
+    Group by category rather than breaking on each change of one. The
+    selection is ordered by priority within the day, not by category, so the
+    out-of-town rows land after the local ones; breaking on every change
+    printed COMMUNITY twice with NIGHTLIFE in between, while the poster --
+    which groups -- showed one block. Same rule here, same blocks."""
+    order, groups = [], {}
     for e in events:
         cat = (e.get("cat") or "").strip()
-        if cat != seen:
-            out.append("")
-            out.append(cat.upper())
-            seen = cat
-        out.append(line_for(e))
+        if cat not in groups:
+            order.append(cat)
+            groups[cat] = []
+        groups[cat].append(e)
+    out = []
+    for cat in order:
+        out.append("")
+        out.append(cat.upper())
+        out.extend(line_for(e) for e in groups[cat])
     return "\n".join(out).strip()
 
 

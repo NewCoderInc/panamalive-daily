@@ -45,6 +45,9 @@ SHAPES = {"reel": 1920, "feed": 1350, "square": 1080}
 CTA_FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSansCondensed-Bold.ttf"
 ROW_PX = 66          # measured height of one event row at this type size
 BASE_PX = 900        # masthead + band + footer + breathing room
+CTA_BAND_H = 236     # the call-to-action card, in final frame pixels
+CTA_GAP = 28         # breathing room above and below it
+FOOT_CSS = 126       # .foot in build_brand_poster: bottom-anchored, 126 CSS px
 
 
 # The headline is sized to fill 1080px and only the poster's fit pass shrinks
@@ -104,7 +107,7 @@ def _open(b, d, html, height):
     return pg
 
 
-def render_still(d, out_png, zoom, floor=1.0, step=0.05):
+def render_still(d, out_png, zoom, floor=1.0, step=0.05, reserve=0):
     """Render the day to fill exactly one FRAME_W x FRAME_H frame, no scroll.
 
     Tries `zoom` first and steps it down toward `floor` until every row plus
@@ -120,7 +123,10 @@ def render_still(d, out_png, zoom, floor=1.0, step=0.05):
             bp.W = int(round(FRAME_W / z))
             css_h = int(round(FRAME_H / z))
             pg = _open(b, d, html, css_h + 2000)     # measure on a tall canvas
-            need = pg.evaluate(MEASURE) + 190
+            # `reserve` keeps the CTA's strip out of the fit, so a still frame
+            # steps its zoom down far enough to leave that space empty rather
+            # than filling it with rows the card would then cover.
+            need = pg.evaluate(MEASURE) + 190 + reserve
             pg.close()
             if need <= css_h:
                 pg = _open(b, d, html, css_h)
@@ -139,7 +145,7 @@ def render_still(d, out_png, zoom, floor=1.0, step=0.05):
     return used
 
 
-def render_tall(d, out_png, height, zoom=1.0):
+def render_tall(d, out_png, height, zoom=1.0, reserve=0):
     """Screenshot the poster on a tall canvas, keeping every row.
 
     `zoom` renders narrower than 1080 and scales the image back up, which makes
@@ -159,8 +165,12 @@ def render_tall(d, out_png, height, zoom=1.0):
             if attempt == 1:
                 bottom = pg.evaluate(MEASURE)
                 pg.close()
-                # list bottom + the footer band and its margin
-                height = int(bottom + 190)
+                # list bottom + the footer band and its margin, plus any strip
+                # reserved for the call to action. .foot is bottom-anchored, so
+                # the extra height becomes empty canvas between the last row and
+                # the footer -- which is exactly where the CTA card then sits,
+                # covering nothing.
+                height = int(bottom + 190 + reserve)
                 continue
             pg.query_selector(".poster").screenshot(path=str(out_png))
             pg.close()
@@ -237,12 +247,15 @@ def main():
     out = pathlib.Path(a.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     png = out.with_suffix(".png")
-    tall = render_tall(d, png, tall, a.zoom)
+    # The strip the CTA will occupy, in CSS pixels: the render happens at
+    # 1080/zoom wide and is scaled back up, so final pixels divide by zoom.
+    reserve = int((CTA_BAND_H + 2 * CTA_GAP) / a.zoom) if a.cta else 0
+    tall = render_tall(d, png, tall, a.zoom, reserve)
     print("   tall poster: 1080x%d (%d events)" % (tall, len(d["shown"])))
 
     still = None
     if a.still_slack > 0 and tall - FRAME_H <= a.still_slack:
-        still = render_still(d, png, a.zoom)
+        still = render_still(d, png, a.zoom, reserve=reserve)
     if still is not None:
         print("   still frame: only %+dpx past the frame, no scroll (zoom %.2f)"
               % (tall - FRAME_H, still))
@@ -261,10 +274,15 @@ def main():
         # is the peak that outruns the eye. So size the travel off the peak.
         distance = tall - FRAME_H
         travel = 1.5 * distance / a.px_per_sec
-        seconds = 2 * a.hold + travel
+        # The CTA gets its own time at the end rather than overlapping the
+        # scroll: its reserved strip is only in frame once the scroll has
+        # landed, and a card fading in over moving rows is what covered them
+        # before. So the tail is hold + cta, not hold.
+        tail = a.hold + (a.cta_seconds if a.cta else 0.0)
+        seconds = a.hold + travel + tail
         if seconds > a.max_seconds:
             seconds = a.max_seconds
-            travel = seconds - 2 * a.hold
+            travel = seconds - a.hold - tail
             print("   capped at %.0fs: %d events scroll at %.0f px/s peak, "
                   "faster than the %.0f asked for"
                   % (seconds, len(d["shown"]), 1.5 * distance / travel,
@@ -284,20 +302,16 @@ def main():
         # Two lines, because one line of this at a readable size is wider than
         # 1080 and ffmpeg does not wrap -- it just runs off both edges.
         alpha = "min((t-%.2f)/0.5,1)" % t0
-        # A dark band behind it: the text lands over event rows, and white on
-        # a busy list is unreadable however big the type is.
-        # Positions are proportional so the band sits just above the footer in
-        # every shape -- a fixed 660px offset lands mid-frame on a 4:5 video.
-        # On a still frame the rows fill the whole frame, so the 0.655 slot
-        # lands on top of the last events; drop the band nearer the footer.
-        band_y = int(FRAME_H * (0.76 if still is not None else 0.655))
-        # A scrolling reel has run past its last row by the time the card
-        # appears, so a translucent band there sits on empty space. A still
-        # frame has not moved: the rows are still underneath, and at 0.86 they
-        # read through the band as a smear behind the type. Go opaque there.
-        band_a = 1.0 if still is not None else 0.86
-        vf += (",drawbox=x=0:y=%d:w=iw:h=236:color=0x140a1e@%.2f:t=fill"
-               ":enable='gte(t,%.2f)'" % (band_y, band_a, t0))
+        # The card goes in the strip reserved for it above the pink footer,
+        # so it covers no events at all. .foot is 126 CSS px and the render
+        # scales by `zoom`, which gives the footer's height in frame pixels;
+        # the card sits one gap above that. Earlier versions placed it at a
+        # fraction of the frame and landed on the last rows.
+        zoom_used = still if still is not None else a.zoom
+        foot_px = int(round(FOOT_CSS * zoom_used))
+        band_y = FRAME_H - foot_px - CTA_GAP - CTA_BAND_H
+        vf += (",drawbox=x=0:y=%d:w=iw:h=%d:color=0x140a1e@0.92:t=fill"
+               ":enable='gte(t,%.2f)'" % (band_y, CTA_BAND_H, t0))
         lines = [l.strip() for l in a.cta.split("|")]
         for i, line in enumerate(lines):
             vf += (",drawtext=fontfile=%s:text='%s':fontsize=%d"
