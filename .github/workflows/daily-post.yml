@@ -142,7 +142,7 @@ jobs:
           echo "backing track: $BED"
           python3 scripts/build_reel.py build/reel.json \
               --out "docs/${{ steps.d.outputs.date }}/${{ steps.d.outputs.poster }}_REEL.mp4" \
-              --tx tx.json --zoom 1.45 --audio "$BED" \
+              --tx tx.json --audio "$BED" \
               --cta "FOLLOW & LIKE | @thepanamalive.ai · daily"
 
       - name: Build the phone page for manual posting
