@@ -94,8 +94,32 @@ REEL_CSS = """
 })();
 """
 
+# The footer is one fixed-width row -- a 41px wordmark and a 27px handle held
+# apart by space-between -- so it does not reflow, it overflows. `zoom` renders
+# on a narrower canvas, and past about 1.5 the handle runs off the right edge
+# ("@thepanamalive.a"). Everything else on the poster is a stack that simply
+# grows taller, which is why only this bar breaks.
+#
+# So pin the footer to the size it has always had: divide its type and padding
+# by the zoom, and it lands at the same final pixels at any zoom. The event
+# rows still scale up -- which is the point -- while the brand bar stays put.
+FOOTER_FIX_CSS = """
+(function (k) {
+  var st = document.createElement('style');
+  var px = function (v) { return (v * k).toFixed(2) + 'px'; };
+  st.textContent =
+    '.foot{padding:0 ' + px(40) + ' !important}' +
+    '.fl .url{font-size:' + px(41) + ' !important}' +
+    '.fl .tag{font-size:' + px(14.5) + ' !important}' +
+    '.fr .handle{font-size:' + px(27) + ' !important}' +
+    '.fr .scan{font-size:' + px(12.5) + ' !important}';
+  document.head.appendChild(st);
+  return k;
+})(%.5f);
+"""
 
-def _open(b, d, html, height):
+
+def _open(b, d, html, height, zoom=1.0):
     bp.H = height
     html.write_text(bp.build(d), encoding="utf-8")
     pg = b.new_page(viewport={"width": bp.W, "height": height},
@@ -103,6 +127,9 @@ def _open(b, d, html, height):
     pg.goto(html.resolve().as_uri())
     pg.wait_for_timeout(350)
     pg.evaluate(REEL_CSS)
+    # Before HEAD_FIT: the headline measures itself against the canvas, and the
+    # footer is the one block that cannot shrink to fit it.
+    pg.evaluate(FOOTER_FIX_CSS % (1.0 / zoom))
     pg.evaluate(HEAD_FIT)
     return pg
 
@@ -122,14 +149,14 @@ def render_still(d, out_png, zoom, floor=1.0, step=0.05, reserve=0):
         while z >= floor - 1e-9:
             bp.W = int(round(FRAME_W / z))
             css_h = int(round(FRAME_H / z))
-            pg = _open(b, d, html, css_h + 2000)     # measure on a tall canvas
+            pg = _open(b, d, html, css_h + 2000, z)     # measure on a tall canvas
             # `reserve` keeps the CTA's strip out of the fit, so a still frame
             # steps its zoom down far enough to leave that space empty rather
             # than filling it with rows the card would then cover.
             need = pg.evaluate(MEASURE) + 190 + reserve
             pg.close()
             if need <= css_h:
-                pg = _open(b, d, html, css_h)
+                pg = _open(b, d, html, css_h, z)
                 pg.query_selector(".poster").screenshot(path=str(out_png))
                 pg.close()
                 used = z
@@ -161,7 +188,7 @@ def render_tall(d, out_png, height, zoom=1.0, reserve=0):
     with sync_playwright() as p:
         b = p.chromium.launch(args=["--force-color-profile=srgb"])
         for attempt in (1, 2):
-            pg = _open(b, d, html, height)
+            pg = _open(b, d, html, height, zoom)
             if attempt == 1:
                 bottom = pg.evaluate(MEASURE)
                 pg.close()
@@ -207,9 +234,14 @@ def main():
     ap.add_argument("--shape", choices=tuple(SHAPES), default="reel",
                     help="reel = 1080x1920 (9:16), feed = 1080x1350 (4:5, the "
                          "only tall shape Instagram's web uploader accepts)")
-    ap.add_argument("--zoom", type=float, default=1.3,
-                    help="render this much narrower than 1080 and scale up: "
-                         "bigger type on a phone and a longer scroll")
+    ap.add_argument("--zoom", type=float, default=1.80, metavar="CEILING",
+                    help="largest type to use: render this much narrower than "
+                         "1080 and scale up. A ceiling, not a fixed value -- "
+                         "a day too busy to fit it in --max-seconds at the "
+                         "target pace is rendered smaller instead of faster")
+    ap.add_argument("--zoom-floor", type=float, default=1.20,
+                    help="never shrink the type below this to save time; past "
+                         "it the reel is capped and does scroll faster")
     ap.add_argument("--hold", type=float, default=1.5,
                     help="still seconds at the start and at the end")
     ap.add_argument("--audio", default=None,
@@ -247,15 +279,45 @@ def main():
     out = pathlib.Path(a.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     png = out.with_suffix(".png")
-    # The strip the CTA will occupy, in CSS pixels: the render happens at
-    # 1080/zoom wide and is scaled back up, so final pixels divide by zoom.
-    reserve = int((CTA_BAND_H + 2 * CTA_GAP) / a.zoom) if a.cta else 0
-    tall = render_tall(d, png, tall, a.zoom, reserve)
+
+    # --zoom is a ceiling, not a setting. Bigger type means a taller poster,
+    # and at a fixed reading pace a taller poster means a longer reel -- so on
+    # a 65-event day the largest type would need about three minutes, get
+    # clipped to --max-seconds, and scroll three times faster than a quiet
+    # day. That trades the readability it was meant to buy.
+    #
+    # So work out how tall the poster may be and still fit the time budget at
+    # the target pace, then take the largest type that fits under it. A quiet
+    # day reaches the ceiling; a busy one settles lower and keeps the pace.
+    tail = a.hold + (a.cta_seconds if a.cta else 0.0)
+    travel_budget = a.max_seconds - a.hold - tail
+    tall_budget = FRAME_H + travel_budget * a.px_per_sec / 1.5
+
+    # Height is not quite proportional to zoom -- a narrower canvas wraps more
+    # titles onto a second line -- so estimate, re-measure, and repeat. The
+    # estimate runs low, so this converges downward in a step or two.
+    zoom = a.zoom
+    for _ in range(5):
+        # The strip the CTA will occupy, in CSS pixels: the render happens at
+        # 1080/zoom wide and is scaled back up, so final pixels divide by zoom.
+        reserve = int((CTA_BAND_H + 2 * CTA_GAP) / zoom) if a.cta else 0
+        tall = render_tall(d, png, tall, zoom, reserve)
+        if tall <= tall_budget or zoom <= a.zoom_floor + 1e-9:
+            break
+        nxt = max(a.zoom_floor, round(zoom * tall_budget / tall, 2))
+        if nxt >= zoom:                      # estimate stalled; nudge it
+            nxt = round(zoom - 0.05, 2)
+        print("   zoom %.2f gives %dpx, over the %.0fs budget -- trying %.2f"
+              % (zoom, tall, a.max_seconds, nxt))
+        zoom = nxt
+    if zoom < a.zoom:
+        print("   type sized to the day: zoom %.2f (ceiling %.2f)"
+              % (zoom, a.zoom))
     print("   tall poster: 1080x%d (%d events)" % (tall, len(d["shown"])))
 
     still = None
     if a.still_slack > 0 and tall - FRAME_H <= a.still_slack:
-        still = render_still(d, png, a.zoom, reserve=reserve)
+        still = render_still(d, png, zoom, reserve=reserve)
     if still is not None:
         print("   still frame: only %+dpx past the frame, no scroll (zoom %.2f)"
               % (tall - FRAME_H, still))
@@ -307,7 +369,7 @@ def main():
         # scales by `zoom`, which gives the footer's height in frame pixels;
         # the card sits one gap above that. Earlier versions placed it at a
         # fraction of the frame and landed on the last rows.
-        zoom_used = still if still is not None else a.zoom
+        zoom_used = still if still is not None else zoom
         foot_px = int(round(FOOT_CSS * zoom_used))
         band_y = FRAME_H - foot_px - CTA_GAP - CTA_BAND_H
         vf += (",drawbox=x=0:y=%d:w=iw:h=%d:color=0x140a1e@0.92:t=fill"
