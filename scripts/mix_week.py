@@ -44,6 +44,7 @@ GENRES = [
     (r"soprano|tenor|[oó]pera\b|recital|\bcoral\b|choral|misa criolla", "Classical", "candle"),
     (r"power metal", "Power metal", "metal"),
     (r"\bmetal\b", "Metal", "metal"),
+    (r"hardcore", "Hardcore punk", "punk"),
     (r"\bpunk\b", "Punk rock", "punk"),
     (r"t[ií]pic", "Típico", "vinyl"),
     (r"\bsalsa\b", "Salsa", "vinyl"),
@@ -63,6 +64,21 @@ DAY_EN = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 DAY_FULL = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
 DAY_ES = ["lun", "mar", "mié", "jue", "vie", "sáb", "dom"]
 MON = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+DAY_FULL_ES = ["Lunes", "Martes", "Miércoles", "Jueves", "Viernes", "Sábado", "Domingo"]
+MON_ES = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
+# Slide copy for the Spanish pass. The reel runs every slide in English, then
+# every slide again in Spanish, so the fixed words need both versions.
+GENRE_ES = {"Classical by candlelight": "Clásica a la luz de las velas", "Classical": "Clásica",
+            "Power metal": "Power metal", "Metal": "Metal", "Hardcore punk": "Hardcore punk",
+            "Punk rock": "Punk rock", "Típico": "Típico", "Salsa": "Salsa", "Dancehall": "Dancehall",
+            "Reggaeton": "Reguetón", "Electronic": "Electrónica", "Dub": "Dub", "Jazz": "Jazz",
+            "Reggae": "Reggae", "Blues": "Blues", "Tribute": "Tributo", "Rock": "Rock",
+            "Latin": "Música latina", "Live music": "Música en vivo"}
+LANG = "en"
+
+
+def es():
+    return LANG == "es"
 
 
 def d_(s):
@@ -71,11 +87,19 @@ def d_(s):
 
 def short_date(s):
     d = d_(s)
+    if es():
+        return "%s %d %s" % (DAY_ES[d.weekday()], d.day, MON_ES[d.month - 1])
     return "%s %s %d" % (DAY_EN[d.weekday()], MON[d.month - 1], d.day)
 
 
 def span(a, b):
     a, b = d_(a), d_(b)
+    if es():
+        if a == b:
+            return "%d %s" % (a.day, MON_ES[a.month - 1])
+        if a.month == b.month:
+            return "%d – %d %s" % (a.day, b.day, MON_ES[a.month - 1])
+        return "%d %s – %d %s" % (a.day, MON_ES[a.month - 1], b.day, MON_ES[b.month - 1])
     if a == b:
         return "%s %d" % (MON[a.month - 1], a.day)
     if a.month == b.month:
@@ -90,22 +114,24 @@ def t12(t):
     if not m:
         return ""
     hh, mm = int(m.group(1)), m.group(2)
+    if es():
+        return "%d:%s %s" % (hh % 12 or 12, mm, "a. m." if hh < 12 else "p. m.")
     return "%d:%s %s" % (hh % 12 or 12, mm, "AM" if hh < 12 else "PM")
 
 
 def price_line(en_price, free):
     p = (en_price or "").strip()
     if free or re.search(r"\bgratis\b|\bfree\b", p, re.I):
-        return "Free entry"
+        return "Entrada libre" if es() else "Free entry"
     amounts = re.findall(r"\$\s?(\d+(?:\.\d{1,2})?)", p)
     if not amounts:
         return ""
     if len(amounts) > 1:
         # A price ladder never fits a slide; the floor is the honest summary.
-        return "From $%s" % min(amounts, key=float)
+        return ("Desde $%s" if es() else "From $%s") % min(amounts, key=float)
     if len(p) <= 24:
         return p[0].upper() + p[1:]
-    return "From $%s" % amounts[0]
+    return ("Desde $%s" if es() else "From $%s") % amounts[0]
 
 
 def short_name(s):
@@ -128,10 +154,12 @@ def nice(s):
 
 
 def strip_venue(title, venue):
-    m = re.search(r"\s+(?:at|en|@|—|–|-)\s+(.+)$", title)
-    if m:
-        tail, v = m.group(1).strip().lower(), venue.strip().lower()
-        if v and (v.startswith(tail) or tail.startswith(v)):
+    # Try every " at / en / @ " split, not just the first: "Jazz en vivo en
+    # Les Mecs" has to lose "en Les Mecs", not stop at "en vivo".
+    v = venue.strip().lower()
+    for m in re.finditer(r"\s+(?:at|en|@|—|–|-)\s+", title):
+        tail = title[m.end():].strip().lower()
+        if v and tail and (v.startswith(tail) or tail.startswith(v)):
             return title[:m.start()].strip()
     return title
 
@@ -183,12 +211,27 @@ def load(a):
     return rows, tx
 
 
-def build(rows, tx, today):
+def build(rows, tx, today, lang="en"):
+    global LANG
+    LANG = lang
+
     def en(s):
         hit = tx.get(s or "")
         if isinstance(hit, dict):
             return hit.get("en") or s or ""
         return hit if isinstance(hit, str) else (s or "")
+
+    def loc(s):
+        # What a slide shows. Choosing which shows headline stays on en(), so
+        # the English and Spanish passes always feature the same acts.
+        if lang != "es":
+            return en(s)
+        hit = tx.get(s or "")
+        if isinstance(hit, dict):
+            return hit.get("es") or s or ""
+        return s or ""
+
+    gl = (lambda g: GENRE_ES.get(g, g)) if lang == "es" else (lambda g: g)
 
     week = sorted({r["d"] for r in rows})
     if today < week[0] or today > week[-1]:
@@ -223,8 +266,8 @@ def build(rows, tx, today):
             return ""
         note = "%s %s" % (r.get("note") or "", en(r.get("note")))
         if len(nights.get(((r.get("title") or "").lower(), (r.get("venue") or "").lower()), ())) >= 5:
-            return "nightly"
-        return "weekly night" if re.search(r"patr[oó]n semanal|weekly pattern", note, re.I) else ""
+            return "todas las noches" if lang == "es" else "nightly"
+        return ("noche semanal" if lang == "es" else "weekly night") if re.search(r"patr[oó]n semanal|weekly pattern", note, re.I) else ""
 
     # ---- headline slides: fully confirmed rows only --------------------
     ok = sorted((r for r in lm if not r.get("verify") and t12(r.get("t"))),
@@ -281,31 +324,31 @@ def build(rows, tx, today):
     features, names = [], []
     for i, g in enumerate(groups):
         r = g[0]
-        title = en(r.get("title")).strip()
-        venue = en(r.get("venue")).strip()
+        title = loc(r.get("title")).strip()
+        venue = loc(r.get("venue")).strip()
         label, art = genre_of(r, en)
         if len(g) > 1:
             head = title.split(":", 1)[0].strip()
-            sub = "At %s" % venue
-            frows = [[t12(x.get("t")), en(x.get("title")).split(":", 1)[1].strip(),
-                      price_line(en(x.get("price")), x.get("free"))] for x in g]
+            sub = ("En %s" if lang == "es" else "At %s") % venue
+            frows = [[t12(x.get("t")), loc(x.get("title")).split(":", 1)[-1].strip(),
+                      price_line(loc(x.get("price")), x.get("free"))] for x in g]
         else:
             head, _, tail = title.partition(" — ")
             head, sub = head.strip(), tail.strip()
             if not sub:
-                sub = first_sentence(en(r.get("desc")), head)
-            frows = [[t12(r.get("t")), venue, price_line(en(r.get("price")), r.get("free"))]]
+                sub = first_sentence(loc(r.get("desc")), head)
+            frows = [[t12(r.get("t")), venue, price_line(loc(r.get("price")), r.get("free"))]]
         features.append({"art": art, "color": ACCENTS[i % len(ACCENTS)], "day": short_date(r["d"]),
-                         "genre": label, "title": head, "sub": sub, "rows": frows})
+                         "genre": gl(label), "title": head, "sub": sub, "rows": frows})
         names.append((short_name(head), d_(r["d"]).weekday()))
 
     # ---- day slides: everything from today on ---------------------------
     by_day = {}
     for r in lm:
-        title = strip_venue(en(r.get("title")).strip(), en(r.get("venue")).strip())
-        bits = [en(r.get("venue")).strip()]
+        title = strip_venue(loc(r.get("title")).strip(), loc(r.get("venue")).strip())
+        bits = [loc(r.get("venue")).strip()]
         tag = pattern(r)
-        price = price_line(en(r.get("price")), r.get("free"))
+        price = price_line(loc(r.get("price")), r.get("free"))
         if len(title) > 34 and " — " in title:
             # A long "show — performers" title would be shrunk to fit one line
             # until nobody can read it; the performers move down a line instead.
@@ -318,7 +361,7 @@ def build(rows, tx, today):
         by_day.setdefault(r["d"], []).append(
             [t12(r.get("t")), title, " · ".join(b for b in bits if b), not r.get("verify")])
     for d in by_day:
-        by_day[d].sort(key=lambda x: (not x[3], x[0] == "", dt.datetime.strptime(x[0], "%I:%M %p").time() if x[0] else dt.time(0), x[1].lower()))
+        by_day[d].sort(key=lambda x: (not x[3], x[0] == "", dt.datetime.strptime(x[0].replace("a. m.", "AM").replace("p. m.", "PM"), "%I:%M %p").time() if x[0] else dt.time(0), x[1].lower()))
 
     days, dates, i = [], sorted(by_day), 0
     while i < len(dates):
@@ -326,16 +369,18 @@ def build(rows, tx, today):
         nxt = dates[i + 1] if i + 1 < len(dates) else None
         if nxt and len(by_day[d]) <= 3 and len(by_day[nxt]) <= 3:
             # Two thin days share a slide; each row then says which day it is.
-            merged = [[r[0], r[1], "%s · %s" % (DAY_FULL[d_(x).weekday()], r[2]), r[3]]
+            FULL, SHORT = (DAY_FULL_ES, [x.capitalize() for x in DAY_ES]) if lang == "es" else (DAY_FULL, DAY_EN)
+            merged = [[r[0], r[1], "%s · %s" % (FULL[d_(x).weekday()], r[2]), r[3]]
                       for x in (d, nxt) for r in by_day[x]]
             days.append({"date": span(d, nxt), "rows": merged,
-                         "name": "%s + %s" % (DAY_EN[d_(d).weekday()], DAY_EN[d_(nxt).weekday()])})
+                         "name": "%s + %s" % (SHORT[d_(d).weekday()], SHORT[d_(nxt).weekday()])})
             i += 2
             continue
         rws = by_day[d]
         for n, k in enumerate(range(0, len(rws), MAX_DAY_ROWS)):
             days.append({"date": short_date(d), "rows": rws[k:k + MAX_DAY_ROWS],
-                         "name": DAY_FULL[d_(d).weekday()] + (" (%d)" % (n + 1) if n else "")})
+                         "name": (DAY_FULL_ES if lang == "es" else DAY_FULL)[d_(d).weekday()]
+                         + (" (%d)" % (n + 1) if n else "")})
         i += 1
     for n, day in enumerate(days):
         day["color"] = ACCENTS[n % len(ACCENTS)]
@@ -345,10 +390,14 @@ def build(rows, tx, today):
     n = sum(len(g) for g in groups)
     wk = {
         "slug": slug, "range": span(week[0], week[-1]), "total_listings": total,
-        "cover_sub_reel": ("%d headline show%s, then every listing day by day." % (n, "" if n == 1 else "s")
-                           if n else "Every live music listing, day by day."),
-        "cover_sub_carousel": ("%d confirmed show%s this week." % (n, "" if n == 1 else "s")
-                               if n else "Live music all week in Panama City."),
+        "cover_sub_reel": (("%d show%s destacado%s y luego cada día de la semana." % (n, "" if n == 1 else "s", "" if n == 1 else "s")
+                            if n else "Toda la música en vivo, día por día.") if lang == "es" else
+                           ("%d headline show%s, then every listing day by day." % (n, "" if n == 1 else "s")
+                            if n else "Every live music listing, day by day.")),
+        "cover_sub_carousel": (("%d show%s confirmado%s esta semana." % (n, "" if n == 1 else "s", "" if n == 1 else "s")
+                                if n else "Música en vivo toda la semana en Ciudad de Panamá.") if lang == "es" else
+                               ("%d confirmed show%s this week." % (n, "" if n == 1 else "s")
+                                if n else "Live music all week in Panama City.")),
         "features": features, "days": days,
     }
 
@@ -388,6 +437,9 @@ def main():
         print("nothing to post: %s" % why)
         return 3
     wk, caption = res
+    # The same week again in Spanish: the reel and the carousel run through
+    # every slide in English, then every slide in Spanish.
+    wk["es"] = build(rows, tx, a.date, "es")[0][0]
     if len(caption) > 2200 or caption.count("#") != 5:
         sys.exit("caption is malformed: %d chars, %d hashtags" % (len(caption), caption.count("#")))
     for p, body in ((a.out, json.dumps(wk, ensure_ascii=False, indent=1)), (a.caption, caption)):

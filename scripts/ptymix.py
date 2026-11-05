@@ -159,26 +159,50 @@ def clip(t,f,w):
     if MD.textlength(t,font=f)<=w: return t
     while t and MD.textlength(t+'…',font=f)>w: t=t[:-1]
     return t.rstrip(' ·—-')+'…'
+# Fixed slide copy in both languages. The reel and the carousel show every
+# slide in English first, then the whole set again in Spanish.
+TXT={'en':dict(note="Colored time: fully confirmed. For the rest, ask the venue.",web="Check Website: PanamaLive.AI",
+               week="Your week in live music",city="Panama City",full=("THE FULL","WEEK"),n="%d live music listings"),
+     'es':dict(note="Hora en color: confirmada. Para el resto, consulta al local.",web="Visita la web: PanamaLive.AI",
+               week="Tu semana de música en vivo",city="Ciudad de Panamá",full=("LA SEMANA","COMPLETA"),n="%d eventos de música en vivo")}
+LG='en'
 def day(acc,date,name,rows):
     b=Blk(); b.pill(date,acc); b.text(name.upper(),HB,116,WHITE,1,1.08); b.rule(acc)
     for tm,title,venue,ok in rows:
-        y=b.y; b.d.text((X,y+3),tm,font=F(HB,38),fill=hx(acc) if ok else (255,255,255,150))
+        # "10:00 p. m." is wider than "10:00 PM"; shrink it into the column
+        # rather than letting it run under the title.
+        y=b.y; ft=fit(tm,HB,38,TC-18,0.55); b.d.text((X,y+3+(38-ft.size)//2),tm,font=ft,fill=hx(acc) if ok else (255,255,255,150))
         f1=fit(title,RB,40,MW-TC); b.d.text((X+TC,y),clip(title,f1,MW-TC),font=f1,fill=WHITE)
         f2=fit(venue,RR,30,MW-TC); b.d.text((X+TC,y+50),clip(venue,f2,MW-TC),font=f2,fill=(255,255,255,190)); b.y+=98
-    b.y+=8; b.text("Colored time: fully confirmed. For the rest, ask the venue.",RR,28,(255,255,255,150),1,1.3); b.text("Check Website: PanamaLive.AI",RB,28,(255,255,255,200),1,1.3)
+    b.y+=8; b.text(TXT[LG]['note'],RR,28,(255,255,255,150),1,1.3); b.text(TXT[LG]['web'],RB,28,(255,255,255,200),1,1.3)
     return 'vinyl',acc,b
 def cover(H,wk):
     acc='#ff2e7e'; b=Blk(); b.pill(wk["range"],acc)
     b.text("PTY LIVE",HB,190,WHITE,1,1.04); b.text("MIX",HB,230,hx('#ffb020'),1,1.1); b.rule(acc)
-    b.text("Your week in live music",RB,60,WHITE,1,1.25); b.text("Panama City",RR,50,(255,255,255,225),1,1.4)
+    b.text(TXT[LG]['week'],RB,60,WHITE,1,1.25); b.text(TXT[LG]['city'],RR,50,(255,255,255,225),1,1.4)
     b.text(wk["cover_sub_reel"] if H>1500 else wk["cover_sub_carousel"],RR,46,(255,255,255,205),2,1.3)
     return 'vinyl',acc,b
 def closing(H,wk):
     acc='#19d3c5'; b=Blk(); b.pill(wk["range"],acc)
-    b.text("THE FULL",HB,190,WHITE,1,1.04); b.text("WEEK",HB,190,WHITE,1,1.14); b.rule(acc)
-    b.text(f'{wk["total_listings"]} live music listings',RB,60,WHITE,1,1.5); b.text("PanamaLive.Ai",HB,120,hx(acc),1,1.25); b.text("#PTYLiveMix",RB,54,WHITE,1,1.1)
+    b.text(TXT[LG]['full'][0],HB,190 if LG=='en' else 150,WHITE,1,1.04); b.text(TXT[LG]['full'][1],HB,190 if LG=='en' else 150,WHITE,1,1.14); b.rule(acc)
+    b.text(TXT[LG]['n']%wk["total_listings"],RB,60,WHITE,1,1.5); b.text("PanamaLive.Ai",HB,120,hx(acc),1,1.25); b.text("#PTYLiveMix",RB,54,WHITE,1,1.1)
     return 'vinyl',acc,b
+MAXT=170
 def slides(H,video,wk):
+    # English pass, then the same slides in Spanish when the week carries them.
+    global LG
+    out,D=[],[]
+    for lg,w in (('en',wk),('es',wk.get('es'))):
+        if not w: continue
+        LG=lg; o,d=_slides(H,video,w); out+=o; D+=d
+    LG='en'
+    if video and sum(D)>MAXT:
+        # Two languages double the running time; Instagram stops at three
+        # minutes, so every slide gives up the same share rather than the
+        # Spanish pass being cut short.
+        k=MAXT/sum(D); D=[x*k for x in D]
+    return out,D
+def _slides(H,video,wk):
     S=[cover(H,wk)]; D=[5.6]
     for f in wk["features"]:
         S.append((f["art"],f["color"],gig(H,f["color"],f["day"],f["genre"],f["title"],f["sub"],[tuple(r) for r in f["rows"]]))); D.append(7.2 if len(f["rows"])==1 else 8.4)
