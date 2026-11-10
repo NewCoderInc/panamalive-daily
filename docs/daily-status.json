@@ -1,9 +1,9 @@
 {
- "date": "2026-11-09",
- "result": "queued_unverified",
- "reason": "poster queued, reel sent",
- "poster": "queued",
+ "date": "2026-11-10",
+ "result": "posted",
+ "reason": "",
+ "poster": "sent",
  "reel": "sent",
- "run": "https://github.com/NewCoderInc/panamalive-daily/actions/runs/42625758356",
- "at": "2026-11-09T13:36:49Z"
+ "run": "https://github.com/NewCoderInc/panamalive-daily/actions/runs/42821657224",
+ "at": "2026-11-10T13:15:01Z"
 }
