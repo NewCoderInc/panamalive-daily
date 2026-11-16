@@ -46,7 +46,7 @@ GENRES = [
     (r"\bmetal\b", "Metal", "metal"),
     (r"hardcore", "Hardcore punk", "punk"),
     (r"\bpunk\b", "Punk rock", "punk"),
-    (r"t[ií]pic", "Típico", "vinyl"),
+    (r"t[ií]pic|acorde[oó]n", "Típico", "vinyl"),
     (r"\bsalsa\b", "Salsa", "vinyl"),
     (r"dancehall", "Dancehall", "vinyl"),
     (r"reggaet[oó]n", "Reggaeton", "vinyl"),
@@ -317,6 +317,8 @@ def build(rows, tx, today, lang="en"):
                                              not any(x.get("price") for x in g),
                                              later_first(g[0].get("t"))))
                 g = byday[d].pop(0)
+                if series(g) in used_series:
+                    continue                  # never a second Candlelight (or any repeat) headline
                 keep.append(g)
                 used_series.add(series(g))
         groups = sorted(keep, key=lambda g: (g[0]["d"], g[0].get("t") or ""))
