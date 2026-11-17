@@ -134,6 +134,7 @@ jobs:
               --caption build/caption.txt \
               --base-url "${{ vars.PAGES_BASE_URL }}/mix/${{ steps.d.outputs.date }}" \
               --state "${{ steps.d.outputs.dir }}/published.json" \
+              ${{ vars.MIX_CAPTION != 'on' && '--no-caption' || '' }} \
               --wait-for-urls 420 \
               --summary "$GITHUB_STEP_SUMMARY"
           # Queued is not live. Wait for Buffer to say it went out.

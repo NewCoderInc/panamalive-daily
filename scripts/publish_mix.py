@@ -62,6 +62,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("dir")
     ap.add_argument("--caption", required=True)
+    ap.add_argument("--no-caption", action="store_true",
+                    help="post the reel with no caption text (the default since 17 Nov 2026)")
     ap.add_argument("--base-url", required=True)
     ap.add_argument("--state", required=True)
     ap.add_argument("--wait-for-urls", type=int, default=420)
@@ -74,7 +76,10 @@ def main():
     if len(vids) != 1:
         sys.exit("expected exactly one MP4 in %s, found %d" % (a.dir, len(vids)))
     url = "%s/%s" % (a.base_url.rstrip("/"), vids[0].name)
-    caption = pathlib.Path(a.caption).read_text(encoding="utf-8")
+    # The owner asked on 17 Nov 2026 that no caption show beside the reel, so
+    # the workflows pass --no-caption. caption.txt is still written next to
+    # the reel for reference; set the repo variable MIX_CAPTION=on to post it.
+    caption = "" if a.no_caption else pathlib.Path(a.caption).read_text(encoding="utf-8")
     state = pathlib.Path(a.state)
     if state.exists() and json.loads(state.read_text()).get("buffer_post_id"):
         print("already queued in Buffer for this date -- nothing to do")

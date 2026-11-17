@@ -42,6 +42,7 @@ jobs:
               --caption "$DIR/caption.txt" \
               --base-url "${{ vars.PAGES_BASE_URL }}/mix/${{ github.event.inputs.folder }}" \
               --state "$DIR/published.json" \
+              ${{ vars.MIX_CAPTION != 'on' && '--no-caption' || '' }} \
               --wait-for-urls 420 \
               --summary "$GITHUB_STEP_SUMMARY"
           python3 scripts/verify_buffer.py "$DIR/published.json" 420
