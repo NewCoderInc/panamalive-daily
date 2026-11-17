@@ -1,0 +1,77 @@
+name: Post a pre-built PTY Live Mix reel
+
+# For a reel made outside the weekly build -- a custom date range, or one put
+# together from listings that are not on the live site. The reel and its
+# caption are committed to docs/mix/<folder>/ first; this only publishes them
+# through Buffer (to @thepanamalive.ai only) and records the outcome the same
+# way the weekly workflow does, so the text-message check still works.
+on:
+  workflow_dispatch:
+    inputs:
+      folder:
+        description: "Folder under docs/mix holding the MP4 and caption.txt (e.g. 2026-11-17)"
+        required: true
+      range:
+        description: "Dates covered, for the status record (e.g. Nov 17 – 26)"
+        required: true
+
+concurrency:
+  group: weekly-mix
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Post the reel via Buffer
+        env:
+          BUFFER_API_KEY:    ${{ secrets.BUFFER_API_KEY }}
+          BUFFER_CHANNEL_ID: ${{ secrets.BUFFER_CHANNEL_ID }}
+          DIR: docs/mix/${{ github.event.inputs.folder }}
+        run: |
+          test -f "$DIR/caption.txt" && ls "$DIR"/*.mp4
+          python3 scripts/publish_mix.py "$DIR" \
+              --caption "$DIR/caption.txt" \
+              --base-url "${{ vars.PAGES_BASE_URL }}/mix/${{ github.event.inputs.folder }}" \
+              --state "$DIR/published.json" \
+              --wait-for-urls 420 \
+              --summary "$GITHUB_STEP_SUMMARY"
+          python3 scripts/verify_buffer.py "$DIR/published.json" 420
+      - name: Record the outcome
+        if: always()
+        env:
+          JOB_STATUS: ${{ job.status }}
+          DATE: ${{ github.event.inputs.folder }}
+          RANGE: ${{ github.event.inputs.range }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          python3 - <<'PY'
+          import json, os, pathlib, time
+          e = os.environ
+          pub = pathlib.Path("docs/mix") / e["DATE"] / "published.json"
+          rec = json.loads(pub.read_text()) if pub.exists() else {}
+          if rec.get("verified"):
+              result, reason = "posted", ""
+          elif rec.get("buffer_post_id"):
+              result, reason = "queued_unverified", "Buffer status: %s" % rec.get("status", "unknown")
+          else:
+              result, reason = "failed", "nothing was queued in Buffer" if e["JOB_STATUS"] == "success" else "a workflow step failed - see the run"
+          out = {"date": e["DATE"], "range": e["RANGE"], "result": result, "reason": reason,
+                 "run": e["RUN_URL"], "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())}
+          pathlib.Path("docs/mix/latest.json").write_text(json.dumps(out, indent=1) + "\n")
+          print(out)
+          PY
+          git config user.name  "panamalive-bot"
+          git config user.email "actions@github.com"
+          git add docs/mix
+          git diff --cached --quiet || git commit -m "PTY Live Mix status for ${{ github.event.inputs.folder }}"
+          git pull --rebase --quiet || true
+          git push || echo "::warning::could not push the status file"
