@@ -278,7 +278,10 @@ def build(rows, tx, today, lang="en"):
             continue
         title = en(r.get("title"))
         mates = [r]
-        if ":" in title:
+        if r.get("tour"):
+            # One performer, several nights or venues: one headline slide.
+            mates = [x for x in ok if id(x) not in used and x.get("tour") == r["tour"]][:GROUP_ROWS]
+        elif ":" in title:
             pre = title.split(":", 1)[0].strip().lower()
             mates = [x for x in ok if id(x) not in used and x["d"] == r["d"]
                      and x.get("venue") == r.get("venue")
@@ -304,6 +307,10 @@ def build(rows, tx, today, lang="en"):
             # more often an opener, a family show or a free recital.
             m = re.fullmatch(r"(\d{1,2}):(\d{2})", (t or "").strip())
             return -(int(m.group(1)) * 60 + int(m.group(2))) if m else 0
+        # Candlelight is a touring series that plays every week; it headlines
+        # only when there are not enough one-off shows to fill the slides.
+        if sum(series(g) != "candlelight" for g in groups) >= MAX_FEATURES:
+            groups = [g for g in groups if series(g) != "candlelight"]
         byday = {}
         for g in groups:
             byday.setdefault(g[0]["d"], []).append(g)
@@ -329,7 +336,13 @@ def build(rows, tx, today, lang="en"):
         title = loc(r.get("title")).strip()
         venue = loc(r.get("venue")).strip()
         label, art = genre_of(r, en)
-        if len(g) > 1:
+        if len(g) > 1 and len({x["d"] for x in g}) > 1:
+            head = re.sub(r"\s+(live|en vivo)$", "", title, flags=re.I).strip()
+            sub = ("%d funciones · %d lugares" if lang == "es" else "%d shows · %d venues") % (
+                len(g), len({x.get("venue") for x in g}))
+            frows = [[t12(x.get("t")), "%s · %s" % (short_date(x["d"]), loc(x.get("venue"))),
+                      price_line(loc(x.get("price")), x.get("free"))] for x in g]
+        elif len(g) > 1:
             head = title.split(":", 1)[0].strip()
             sub = ("En %s" if lang == "es" else "At %s") % venue
             frows = [[t12(x.get("t")), loc(x.get("title")).split(":", 1)[-1].strip(),
@@ -341,7 +354,9 @@ def build(rows, tx, today, lang="en"):
                 sub = first_sentence(loc(r.get("desc")), head)
             frows = [[t12(r.get("t")), venue, price_line(loc(r.get("price")), r.get("free"))]]
         features.append({"art": art, "color": ACCENTS[i % len(ACCENTS)], "day": short_date(r["d"]),
-                         "genre": gl(label), "title": head, "sub": sub, "rows": frows})
+                         "genre": gl(label), "title": head, "sub": sub, "rows": frows,
+                         # A flyer the organiser sent becomes the slide itself.
+                         "flyer": [x["img"] for x in g if x.get("img")]})
         names.append((short_name(head), d_(r["d"]).weekday()))
 
     # ---- day slides: everything from today on ---------------------------

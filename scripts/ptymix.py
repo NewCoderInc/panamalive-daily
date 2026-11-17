@@ -202,15 +202,65 @@ def slides(H,video,wk):
         # Spanish pass being cut short.
         k=MAXT/sum(D); D=[x*k for x in D]
     return out,D
+def flyer(H,path,acc,tag):
+    # An organiser's own flyer, shown whole: fitted inside the frame over a
+    # blurred, darkened copy of itself, never cropped, so none of its text
+    # (time, address, contacts) is cut off. A small pill names the day.
+    W=1080; src=Image.open(path).convert('RGB')
+    k=max(W/src.width,H/src.height); back=src.resize((round(src.width*k),round(src.height*k)),Image.LANCZOS)
+    back=back.crop(((back.width-W)//2,(back.height-H)//2,(back.width-W)//2+W,(back.height-H)//2+H)).filter(ImageFilter.GaussianBlur(28))
+    back=Image.blend(back,Image.new('RGB',(W,H),(8,8,14)),0.55)
+    k=min(W/src.width,H/src.height); fg=src.resize((round(src.width*k),round(src.height*k)),Image.LANCZOS)
+    back.paste(fg,((W-fg.width)//2,(H-fg.height)//2))
+    im=back.convert('RGBA'); d=ImageDraw.Draw(im); f=F(RB,30); tw=d.textlength(tag,font=f)
+    d.rounded_rectangle((36,36,36+tw+44,36+56),radius=28,fill=hx(acc)); d.text((58,47),tag,font=f,fill=(255,255,255,255))
+    return im
+def flyers(H,paths,acc,f):
+    # Two or more flyers for one performer: shown side by side, whole, under
+    # the headline, with each night's time and venue listed beneath them.
+    W=1080; ims=[Image.open(p).convert('RGB') for p in paths]
+    first=ims[0]; k=max(W/first.width,H/first.height)
+    back=first.resize((round(first.width*k),round(first.height*k)),Image.LANCZOS)
+    back=back.crop(((back.width-W)//2,(back.height-H)//2,(back.width-W)//2+W,(back.height-H)//2+H)).filter(ImageFilter.GaussianBlur(30))
+    im=Image.blend(back,Image.new('RGB',(W,H),(8,8,14)),0.62).convert('RGBA'); d=ImageDraw.Draw(im)
+    top=40 if H<1500 else 90
+    ft=F(RB,30); tag=f["genre"].upper(); tw=d.textlength(tag,font=ft)
+    d.rounded_rectangle((60,top,60+tw+44,top+56),radius=28,fill=hx(acc)); d.text((82,top+11),tag,font=ft,fill=(255,255,255,255))
+    hf=fit(f["title"].upper(),HB,96 if H>1500 else 76,W-120); d.text((60,top+76),f["title"].upper(),font=hf,fill=(255,255,255,255))
+    sf=F(RR,40 if H>1500 else 34); d.text((60,top+86+hf.size),f["sub"],font=sf,fill=(255,255,255,210))
+    rows_h=(len(f["rows"])*(80 if H>1500 else 62))+20
+    y0=top+110+hf.size+sf.size; avail=H-y0-rows_h-(70 if H>1500 else 40)
+    gap=24; wmax=(W-120-gap*(len(ims)-1))//len(ims)
+    k=min(wmax/ims[0].width,avail/ims[0].height); fw,fh=round(ims[0].width*k),round(ims[0].height*k)
+    # Width-bound on a tall frame leaves space below: centre the whole block.
+    spare=avail-fh
+    if spare>40:
+        sh=spare//2; top+=sh; y0+=sh
+        im=Image.blend(back,Image.new('RGB',(W,H),(8,8,14)),0.62).convert('RGBA'); d=ImageDraw.Draw(im)
+        d.rounded_rectangle((60,top,60+tw+44,top+56),radius=28,fill=hx(acc)); d.text((82,top+11),tag,font=ft,fill=(255,255,255,255))
+        d.text((60,top+76),f["title"].upper(),font=hf,fill=(255,255,255,255)); d.text((60,top+86+hf.size),f["sub"],font=sf,fill=(255,255,255,210))
+    x=(W-(fw*len(ims)+gap*(len(ims)-1)))//2
+    for s_ in ims:
+        r=s_.resize((fw,round(s_.height*fw/s_.width)),Image.LANCZOS); im.paste(r,(x,y0)); x+=fw+gap
+    y=y0+fh+(30 if H>1500 else 18); tf=F(HB,40 if H>1500 else 34); vf=F(RB,36 if H>1500 else 30)
+    for tm,where,price in f["rows"]:
+        d.text((60,y),tm,font=tf,fill=hx(acc)); d.text((60+d.textlength(tm,font=tf)+24,y+3),clip(where,vf,W-120-d.textlength(tm,font=tf)-24),font=vf,fill=(255,255,255,235))
+        y+=(80 if H>1500 else 62)
+    return im
 def _slides(H,video,wk):
     S=[cover(H,wk)]; D=[5.6]
     for f in wk["features"]:
+        fl=[p for p in (f.get("flyer") or []) if os.path.exists(p)] if isinstance(f.get("flyer"),list) else ([f["flyer"]] if f.get("flyer") and os.path.exists(f["flyer"]) else [])
+        if len(fl)>1:
+            S.append(("__img__",f["color"],flyers(H,fl,f["color"],f))); D.append(9.0); continue
+        if fl:
+            S.append(("__img__",f["color"],flyer(H,fl[0],f["color"],f["day"]))); D.append(7.2); continue
         S.append((f["art"],f["color"],gig(H,f["color"],f["day"],f["genre"],f["title"],f["sub"],[tuple(r) for r in f["rows"]]))); D.append(7.2 if len(f["rows"])==1 else 8.4)
     if video:
         for d in wk.get("days",[]):
             S.append(day(d["color"],d["date"],d["name"],[tuple(r) for r in d["rows"]])); D.append(8 if len(d["rows"])<=4 else 5+len(d["rows"]))
     S.append(closing(H,wk)); D.append(6.4)
-    return [(compose(k,a,b,H,video),a) for k,a,b in S],D
+    return [((b if k=="__img__" else compose(k,a,b,H,video)),a) for k,a,b in S],D
 def sheet(ims,w,h,path):
     sh=Image.new('RGB',(w*len(ims),h))
     for i,im in enumerate(ims): sh.paste(im.convert('RGB').resize((w,h),Image.LANCZOS),(i*w,0))
